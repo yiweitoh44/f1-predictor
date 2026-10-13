@@ -1,0 +1,24 @@
+location,grid_stickiness,basis
+Melbourne,0.62,Inherited author assumption; not calibrated
+Shanghai,0.58,Inherited author assumption; not calibrated
+Suzuka,0.70,Inherited author assumption; not calibrated
+Miami Gardens,0.68,Inherited author assumption; not calibrated
+Montréal,0.55,Inherited author assumption; not calibrated
+Monte Carlo,0.95,Inherited author assumption; not calibrated
+Barcelona,0.78,Inherited author assumption; not calibrated
+Spielberg,0.48,Inherited author assumption; not calibrated
+Silverstone,0.50,Inherited author assumption; not calibrated
+Spa-Francorchamps,0.42,Inherited author assumption; not calibrated
+Budapest,0.84,Inherited author assumption; not calibrated
+Zandvoort,0.72,Inherited author assumption; not calibrated
+Monza,0.38,Inherited author assumption; not calibrated
+Madrid,0.60,Inherited author assumption; not calibrated
+Baku,0.70,Inherited author assumption; not calibrated
+Kuala Lumpur,0.55,Inherited author assumption; not calibrated
+Marina Bay,0.65,Generic original default; Singapore-specific value not validated
+Austin,0.65,Generic placeholder; not circuit-calibrated
+Mexico City,0.65,Generic placeholder; not circuit-calibrated
+São Paulo,0.65,Generic placeholder; not circuit-calibrated
+Las Vegas,0.65,Generic placeholder; not circuit-calibrated
+Lusail,0.65,Generic placeholder; not circuit-calibrated
+Yas Marina,0.65,Generic placeholder; not circuit-calibrated
