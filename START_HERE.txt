@@ -1,0 +1,171 @@
+F1 PREDICTOR: SETUP AND USE
+Current baseline for predict_anytime.py
+
+SETUP
+Keep predict_anytime.py, tracks.csv and requirements.txt together.
+Open the Git repository folder in VS Code and run commands there.
+For a new Python environment only:
+  python -m pip install -r requirements.txt
+Check installed-package dependencies:
+  python -m pip check
+This checks dependencies, not whether Windows permits every compiled module.
+The current script uses native XGBoost training, rather than XGBRegressor.
+No OpenAI API key, LLM or GPU is required.
+
+QUICK COMMANDS
+Help (no race-data download):
+  python predict_anytime.py --help
+List events (internet required):
+  python predict_anytime.py --year 2026 --list-races
+Predict the Grand Prix:
+  python predict_anytime.py --year 2026 --race Singapore --session race
+Predict normal qualifying:
+  python predict_anytime.py --year 2026 --race Singapore --session qualifying
+Predict Sprint Qualifying, if scheduled:
+  python predict_anytime.py --year 2026 --race Singapore --session sprint-qualifying
+Predict the Sprint, if scheduled:
+  python predict_anytime.py --year 2026 --race Singapore --session sprint
+
+Replace Singapore with a location, country, event name or round number.
+Quote names containing spaces. Ambiguous names are rejected.
+Run before the selected session starts. Rerun after another earlier session
+finishes and its data becomes available to update the prediction inputs.
+Before current-weekend data exists, the script uses historical performance
+and supplied circuit features. At least four usable training weekends in the
+selected season are needed, with an eligible backtest of the requested type.
+
+ALREADY-STARTED EVENTS
+The current version stops after the scheduled target start. There is no
+warning-and-continue prompt or live prediction mode yet.
+Use an earlier UTC cutoff for a historical replay. Example:
+  python predict_anytime.py --year 2026 --race Singapore --session race --as-of "2026-10-11T11:59:00Z"
+That example is specific to the Singapore schedule used for this baseline.
+For another event, use its own verified pre-session cutoff.
+Replay uses current published records, including later corrections, rather
+than an archive of exactly what had been published at the original cutoff.
+
+ALL FLAGS
+-h, --help           Show help and exit.
+--year 2026          Season. Default: 2026.
+--race Singapore     Event selector; required unless using --list-races.
+--session race       race | qualifying | sprint | sprint-qualifying.
+                     Default: race.
+--list-races         List season events and exit.
+--tracks tracks.csv  Circuit CSV; defaults to tracks.csv beside the script.
+--roster roster.csv  Driver/team entries: driver,team; name is optional.
+--grid grid.csv      Complete driver,grid CSV for a Race/Sprint, after its
+                     corresponding qualifying data has loaded.
+--refresh            Refresh FastF1 session caches and rebuild summaries.
+--as-of UTC_TIME     Past replay cutoff before the target's scheduled start.
+                     Example format: 2026-10-11T11:59:00Z. Z means UTC.
+--simulations 25000  Sampled rankings. Default: 25000; range: 100 to 1000000.
+--air-temp 30        Manual air-temperature scenario, degrees Celsius.
+--wet 0              Manual weather scenario: 0 = dry; 1 = wet.
+
+EXAMPLES
+Refresh corrected results, before the target starts:
+  python predict_anytime.py --year 2026 --race Singapore --session race --refresh
+Try a hypothetical wet, 30 C race:
+  python predict_anytime.py --year 2026 --race Singapore --session race --air-temp 30 --wet 1
+Apply a manually verified grid after qualifying:
+  python predict_anytime.py --year 2026 --race Singapore --session race --grid grid.csv
+For an already-started target, these examples also need a suitable --as-of.
+Flags can be combined. Supplied relative paths use the terminal folder;
+quote paths containing spaces. The default tracks.csv uses the script folder.
+
+ROSTER AND GRID
+Without --roster, use the latest loaded current-weekend roster, or the most
+recent earlier competitive roster. Check replacements and FP reserve drivers.
+Grid defaults to Q order for a GP and SQ order for a Sprint when available.
+Penalties are not automatically applied to the target grid.
+grid.csv must list every roster driver once, using abbreviations such as VER,
+and positions 1 through field size once. Pit-lane starters are approximated
+at the back; this is not an accurate pit-lane-start model.
+
+TRACKS AND WEATHER
+tracks.csv is manual. location must match Location from --list-races exactly.
+Recognised numeric columns:
+  grid_stickiness        0..1 assumption; not a probability or fixed weight.
+  length_km              Positive circuit length in km.
+  longest_straight_km    Positive longest-straight length in km.
+  slow_corner_fraction  0..1, using a consistent definition across circuits.
+  high_speed_fraction   0..1, using a consistent definition across circuits.
+  street                0..1; normally 1 for street and 0 for permanent.
+basis is an explanatory note; the model does not use it.
+Similar-track form requires at least two matching, nonmissing geometry/type
+columns on the target and historical circuits. grid_stickiness does not count.
+The existing CSV works but does not enable similar-track form by itself.
+Leave unknown values blank. Match the circuit layout used for the event.
+Unsupported columns are ignored; adding them does not add model features.
+
+Weather comes from completed sessions: median air/track temperatures and
+whether rain was reported, using the latest available observations per field.
+There is no forecast API. With no observations, weather stays missing unless
+overridden. Manual scenarios may or may not change the model output.
+
+OUTPUTS AND CACHE
+On your Windows setup:
+  C:\Users\Yi Wei Toh\F1Data\cache\fastf1
+    Downloaded FastF1 data.
+  C:\Users\Yi Wei Toh\F1Data\cache\anytime_v1\<year>
+    Compact completed-session summaries.
+  C:\Users\Yi Wei Toh\F1Data\outputs\<year>_<round>_<session>\latest
+    Latest outputs for that event and target session.
+On other accounts, F1Data is under that user's home folder.
+
+Each run retrains. Cached completed sessions are reused where possible.
+Rerunning the same event/session overwrites its latest files, including runs
+with a different input stage or cutoff. Other event/session folders remain.
+
+Saved files:
+  predictions.csv        Prediction table.
+  prediction_inputs.csv  Features used for the target drivers.
+  training.csv           Earlier driver-session training examples.
+  backtest.csv           Historical picks and actual first-place drivers.
+  model.json             Newly trained XGBoost model.
+  run_info.json          Cutoff, loaded sessions and assumptions.
+
+Current displayed columns:
+  Qualifying/SQ: pole_pct.
+  Race/Sprint: win_pct, podium_pct, mean_simulated_position.
+pole_pct / win_pct count sampled first places; podium_pct counts top-three
+places combined. mean_simulated_position is the average sampled rank.
+The table is sorted by first-place share, not a guaranteed finishing order.
+These are experimental simulation shares, not calibrated probabilities.
+
+HOW IT LEARNS AND CURRENT LIMITS
+Q and SQ share a training family; Race and Sprint share another.
+Driver/team form uses up to eight earlier family results, favouring newer ones.
+Team form averages teammates within each historical session before smoothing.
+Historical examples use session types available at the current input stage,
+subject to each historical weekend's session order and actual availability.
+Current-weekend results enter through session features, not historical form.
+Labels are normalised finishing positions, including retirement-affected ones.
+
+Up to four eligible recent weekends of the requested type are backtested.
+Each test trains on earlier rounds; the printed fraction counts correct
+first-place picks. Driver score errors set the shared simulation noise.
+The final model trains on all usable earlier examples, then samples rankings.
+There is no lap-by-lap race simulation or additional retirement lottery.
+
+Fastest usable lap gaps are not adjusted for compound, tyre age or fuel.
+Sprint gap is fastest-lap gap, not finishing-time gap to the winner.
+There are no explicit percentage weights prioritising particular sessions.
+No automatic target penalties, forecast or quantified upgrade effect exists.
+No built-in pole/grid-first benchmark or probability calibration exists.
+Four backtests alone do not establish reliable prediction accuracy.
+
+This is a new reusable pipeline adapted from earlier work, not an exact copy
+or a demonstrated accuracy improvement. Proposed changes are not implemented
+until they appear in the code. Local authoring checks used offline stand-ins;
+live FastF1 downloads and real XGBoost fits were not verified there.
+
+REFERENCES / ATTRIBUTION
+Starting-point scripts by farhansh911:
+  https://github.com/farhansh911/baku-2026
+  https://github.com/farhansh911/bahrain-malaysia-2026
+Those projects credit Mariana Antaya:
+  https://github.com/mar-antaya/2026_f1_predictions
+FastF1:
+  https://docs.fastf1.dev/
+Attribution does not itself establish permission to redistribute copied code.
