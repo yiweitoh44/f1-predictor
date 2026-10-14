@@ -35,14 +35,20 @@ and supplied circuit features. At least four usable training weekends in the
 selected season are needed, with an eligible backtest of the requested type.
 
 ALREADY-STARTED EVENTS
-The current version stops after the scheduled target start. There is no
-warning-and-continue prompt or live prediction mode yet.
-Use an earlier UTC cutoff for a historical replay. Example:
+After the target's scheduled start, the script asks whether to continue.
+Enter y or yes to use a cutoff one second before its scheduled start.
+Enter or any other answer cancels.
+
+Only earlier sessions completed before that cutoff are eligible.
+The script lists the sessions it actually loaded. Live status is not
+checked, and target-session laps or results are not prediction inputs.
+
+You can also provide an explicit historical cutoff:
   python predict_anytime.py --year 2026 --race Singapore --session race --as-of "2026-10-11T11:59:00Z"
-That example is specific to the Singapore schedule used for this baseline.
 For another event, use its own verified pre-session cutoff.
-Replay uses current published records, including later corrections, rather
-than an archive of exactly what had been published at the original cutoff.
+
+Replay uses current published records, including later corrections,
+rather than archived records of what was available at the original time.
 
 ALL FLAGS
 -h, --help           Show help and exit.
