@@ -153,6 +153,205 @@ def read_tracks(path):
         result[str(row["location"])] = values
     return result
 
+PACE_COMPOUNDS = ("SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET")
+
+
+def tyre_pace_summary(laps, code):
+    """Matched-tyre gaps and net stint trends, not fuel correction."""
+    required = {"Driver", "Compound", "TyreLife", "FreshTyre",
+                "LapNumber", "Stint", "LapStartTime", "lap_seconds"}
+    if laps.empty or not required.issubset(laps.columns):
+        return {}
+
+    data = laps.copy()
+    data["Compound"] = data.Compound.astype("string").str.upper()
+
+    for column in ("TyreLife", "LapNumber", "Stint", "lap_seconds"):
+        data[column] = pd.to_numeric(data[column], errors="coerce")
+
+    data["start_s"] = pd.to_timedelta(
+        data.LapStartTime, errors="coerce"
+    ).dt.total_seconds()
+
+    data = data[
+        data.Compound.isin(PACE_COMPOUNDS)
+        & data.FreshTyre.isin([True, False])
+        & np.isfinite(data.TyreLife) & (data.TyreLife >= 1)
+        & np.isfinite(data.LapNumber) & np.isfinite(data.Stint)
+        & np.isfinite(data.start_s)
+        & np.isfinite(data.lap_seconds) & (data.lap_seconds > 0)
+    ].copy()
+
+    if data.empty:
+        return {}
+
+    data["age_band"] = ((data.TyreLife - 1) // 3).astype(int)
+
+    # Practice: ten-minute windows. Race/Sprint: five-lap windows.
+    data["phase"] = (
+        (data.LapNumber - 1) // 5 if code in {"S", "R"}
+        else data.start_s // 600
+    ).astype(int)
+
+    output = {}
+    keys = ["Compound", "FreshTyre", "age_band", "phase"]
+
+    def compare(frame, label, statistic, minimum):
+        if frame.empty:
+            return
+
+        best = frame.groupby(keys + ["Driver"], observed=True).agg(
+            pace=("lap_seconds", statistic),
+            samples=("lap_seconds", "size")
+        ).reset_index()
+
+        best = best[best.samples >= minimum].copy()
+        groups = best.groupby(keys, observed=True).pace
+        best["peers"] = groups.transform("size")
+        best["reference"] = groups.transform("min")
+        best = best[best.peers >= 2].copy()
+        best["gap"] = 100 * (best.pace / best.reference - 1)
+
+        for (driver, compound), group in best.groupby(
+            ["Driver", "Compound"], observed=True
+        ):
+            row = output.setdefault(str(driver), {})
+            row[f"{label}_{compound.lower()}_gap_pct"] = float(
+                group.gap.median()
+            )
+            row[label + "_matched_laps"] = (
+                row.get(label + "_matched_laps", 0)
+                + int(group.samples.sum())
+            )
+
+    if code.startswith("FP"):
+        compare(data[data.TyreLife <= 5], "short", "min", 1)
+
+    if not (code.startswith("FP") or code in {"S", "R"}):
+        return output
+
+    running = (
+        data[data.LapNumber > 1].copy()
+        if code in {"S", "R"} else data
+    )
+    sustained = []
+    trends = {}
+
+    for _, stint in running.groupby(
+        ["Driver", "Stint", "Compound", "FreshTyre"], observed=True
+    ):
+        stint = stint.sort_values("LapNumber")
+        breaks = (
+            stint.LapNumber.diff().ne(1)
+            | stint.TyreLife.diff().ne(1)
+            | (stint.start_s.diff() <= 0)
+        ).cumsum()
+
+        for _, run in stint.groupby(breaks):
+            if len(run) < 4:
+                continue
+
+            sustained.append(run)
+            slope = np.polyfit(run.TyreLife, run.lap_seconds, 1)[0]
+            trends.setdefault(str(run.Driver.iloc[0]), []).append(
+                float(100 * slope / run.lap_seconds.median())
+            )
+
+    if sustained:
+        compare(pd.concat(sustained), "long", "median", 2)
+
+    for driver, slopes in trends.items():
+        output.setdefault(driver, {})[
+            "long_trend_pct_per_lap"
+        ] = float(np.median(slopes))
+
+    return output
+
+
+def race_session_context(results, raw_laps):
+    """Finishing gap, completion and neutralisation context."""
+    output = {}
+    winners = results[results.Position.eq(1)]
+    if winners.empty:
+        return output
+
+    winner = winners.iloc[0]
+    winner_time = pd.to_timedelta(winner.get("Time"), errors="coerce")
+    winner_seconds = (
+        winner_time.total_seconds()
+        if pd.notna(winner_time) else np.nan
+    )
+    winner_laps = pd.to_numeric(winner.get("Laps"), errors="coerce")
+    n = len(results)
+
+    for record in results.to_dict("records"):
+        driver = record["Abbreviation"]
+        status_value = record.get("Status")
+        status = (
+            "" if pd.isna(status_value)
+            else str(status_value).strip().casefold()
+        )
+        laps = pd.to_numeric(record.get("Laps"), errors="coerce")
+        grid = pd.to_numeric(record.get("GridPosition"), errors="coerce")
+        position = pd.to_numeric(record.get("Position"), errors="coerce")
+
+        finished = (
+            float(
+                status == "finished"
+                or (status.startswith("+") and "lap" in status)
+            )
+            if status else np.nan
+        )
+
+        duration = pd.to_timedelta(record.get("Time"), errors="coerce")
+        seconds = (
+            duration.total_seconds()
+            if pd.notna(duration) else np.nan
+        )
+
+        valid_gap = (
+            status == "finished"
+            and np.isfinite(winner_seconds)
+            and winner_seconds > 0
+            and np.isfinite(seconds)
+            and seconds >= winner_seconds
+            and np.isfinite(laps)
+            and np.isfinite(winner_laps)
+            and laps == winner_laps
+        )
+
+        fraction = (
+            laps / winner_laps
+            if np.isfinite(laps) and np.isfinite(winner_laps)
+            and winner_laps > 0 else np.nan
+        )
+
+        neutralized = np.nan
+        if {"Driver", "TrackStatus"}.issubset(raw_laps.columns):
+            statuses = raw_laps.loc[
+                raw_laps.Driver.eq(driver), "TrackStatus"
+            ].dropna().astype(str)
+            if len(statuses):
+                neutralized = float(
+                    statuses.str.contains(r"[4567]", regex=True).mean()
+                )
+
+        output[driver] = {
+            "finish_gap_pct": (
+                100 * (seconds - winner_seconds) / winner_seconds
+                if valid_gap else np.nan
+            ),
+            "laps_completed_fraction": float(fraction),
+            "finished": finished,
+            "grid_gain_norm": (
+                float((grid - position) / max(1, n - 1))
+                if np.isfinite(grid) and grid > 0
+                and np.isfinite(position) else np.nan
+            ),
+            "neutralized_lap_fraction": neutralized,
+        }
+
+    return output
 
 def summarize(session, code):
     # FastF1 uses pandas subclasses. Convert to ordinary frames before validation.
@@ -170,21 +369,37 @@ def summarize(session, code):
     pos = pos.mask(invalid)
     pos = pos.mask(pos.duplicated(keep=False) & pos.notna())
     results["Position"] = pos
-    laps = pd.DataFrame(session.laps).copy()
+    raw_laps = pd.DataFrame(session.laps).copy()
+    laps = raw_laps.copy()
     best, lap_counts = {}, {}
     if not laps.empty and {"Driver", "LapTime"}.issubset(laps.columns):
         laps = laps.dropna(subset=["Driver", "LapTime"])
         for col in ("PitInTime", "PitOutTime"):
             if col in laps:
                 laps = laps[laps[col].isna()]
-        if "IsAccurate" in laps:
-            laps = laps[laps.IsAccurate.eq(True)]
+
+        required_quality = {"IsAccurate", "Deleted", "TrackStatus"}
+
+        if required_quality.issubset(laps.columns):
+            laps = laps[
+                laps.IsAccurate.eq(True)
+                & laps.Deleted.eq(False)
+                & laps.TrackStatus.astype("string").isin(["1", "1.0"])
+            ].copy()
+        else:
+            # Missing quality information is not proof of a valid pace lap.
+            laps = laps.iloc[0:0].copy()
         seconds = pd.to_timedelta(laps.LapTime).dt.total_seconds()
         laps = laps.assign(lap_seconds=seconds)
         laps = laps[np.isfinite(laps.lap_seconds) & (laps.lap_seconds > 0)]
         best = laps.groupby("Driver").lap_seconds.min().to_dict()
         lap_counts = laps.groupby("Driver").size().to_dict()
     fastest = min(best.values()) if best else np.nan
+    pace = tyre_pace_summary(laps, code)
+    context = (
+        race_session_context(results, raw_laps)
+        if code in RACE_TYPES else {}
+    )
     if code.startswith("FP") and not best:
         raise ValueError("no usable practice laps published")
     if code in {"Q", "SQ", "S", "R"} and pos.notna().sum() < max(2, n // 2):
@@ -201,7 +416,9 @@ def summarize(session, code):
                         "position_norm": (position - 1) / max(1, n - 1),
                         "grid": number(row.get("GridPosition")),
                         "gap_pct": 100 * (lap / fastest - 1) if np.isfinite(lap) and np.isfinite(fastest) else np.nan,
-                        "laps": float(lap_counts.get(driver, 0))})
+                        "laps": float(lap_counts.get(driver, 0)),
+                        **pace.get(driver, {}),
+                        **context.get(driver, {})})
     try:
         weather = pd.DataFrame(session.weather_data)
     except Exception:
@@ -216,7 +433,7 @@ def summarize(session, code):
 class Store:
     def __init__(self, year, now, refresh=False):
         self.year, self.now, self.refresh = year, now, refresh
-        self.folder = CACHE_ROOT / "anytime_v1" / str(year)
+        self.folder = CACHE_ROOT / "anytime_v3_pace" / str(year)
         self.memory = {}
 
     def get(self, event, code):
@@ -231,7 +448,7 @@ class Store:
         path = self.folder / f"{rnd:02d}_{code}.json"
         if path.exists() and not self.refresh:
             saved = json.loads(path.read_text(encoding="utf-8"))
-            if saved.get("schema") == 1 and saved.get("event") == event["EventName"]:
+            if saved.get("schema") == 3 and saved.get("event") == event["EventName"]:
                 end = pd.to_datetime(saved.get("completed_utc"), utc=True, errors="coerce")
                 if pd.notna(end) and end < self.now:
                     self.memory[key] = saved["data"]
@@ -242,6 +459,7 @@ class Store:
             # repeatedly reading a partial FastF1 cache from an earlier attempt.
             fastf1.Cache.enable_cache(str(CACHE_ROOT / "fastf1"),
                                      force_renew=self.refresh or self.now - start < pd.Timedelta(days=3))
+            print(f"  Building pace summary R{rnd} {code}", flush=True)
             session = fastf1.get_session(self.year, rnd, code)
             session.load(laps=True, telemetry=True, weather=True, messages=True)
             statuses = pd.DataFrame(session.session_status)
@@ -264,7 +482,7 @@ class Store:
             self.memory[key] = None
             return None
         self.folder.mkdir(parents=True, exist_ok=True)
-        payload = {"schema": 1, "event": event["EventName"], "completed_utc": completed.isoformat(), "data": data}
+        payload = {"schema": 3, "event": event["EventName"], "completed_utc": completed.isoformat(), "data": data}
         temp = path.with_suffix(".tmp")
         temp.write_text(json.dumps(json_safe(payload)), encoding="utf-8")
         temp.replace(path)
@@ -321,10 +539,47 @@ def features(driver, target_code, event, history, inputs, tracks):
     for session_code in INPUTS:
         data = inputs.get(session_code)
         row[session_code + "_available"] = float(data is not None)
-        participant = next((d for d in data["drivers"] if d["driver"] == code), {}) if data else {}
+        participant = next(
+            (d for d in data["drivers"] if d["driver"] == code), {}
+        ) if data else {}
+
         for key in ("position_norm", "gap_pct", "laps"):
-            # Practice positions can depend on run plans, so use lap gaps instead.
-            row[session_code + "_" + key] = number(participant.get(key)) if not (session_code.startswith("FP") and key == "position_norm") else np.nan
+            row[session_code + "_" + key] = number(participant.get(key))
+
+        if session_code.startswith("FP"):
+            row[session_code + "_position_norm"] = np.nan
+
+        if session_code.startswith("FP") or session_code == "S":
+            # Raw fastest-lap gap stays in cache, but is not a pace input.
+            row[session_code + "_gap_pct"] = np.nan
+
+            labels = (
+                ("short", "long")
+                if session_code.startswith("FP") else ("long",)
+            )
+
+            for label in labels:
+                for compound in PACE_COMPOUNDS:
+                    key = f"{label}_{compound.lower()}_gap_pct"
+                    row[session_code + "_" + key] = number(
+                        participant.get(key)
+                    )
+
+                key = label + "_matched_laps"
+                row[session_code + "_" + key] = number(
+                    participant.get(key, 0)
+                )
+
+            row[session_code + "_long_trend_pct_per_lap"] = number(
+                participant.get("long_trend_pct_per_lap")
+            )
+
+        if session_code == "S":
+            for key in (
+                "finish_gap_pct", "laps_completed_fraction", "finished",
+                "grid_gain_norm", "neutralized_lap_fraction"
+            ):
+                row["S_" + key] = number(participant.get(key))
     # Iterate in actual scheduled order, not alphabetic order, for latest weather.
     for session_code, _ in session_schedule(event):
         if session_code in inputs:
@@ -528,6 +783,21 @@ def run(args):
         if data:
             current[code] = data
     print("This weekend's inputs: " + (", ".join(current) if current else "none; using earlier performance only"))
+    for code, data in current.items():
+        if code.startswith("FP") or code == "S":
+            short = sum(
+                number(d.get("short_matched_laps", 0)) > 0
+                for d in data["drivers"]
+            )
+            long = sum(
+                number(d.get("long_matched_laps", 0)) > 0
+                for d in data["drivers"]
+            )
+            print(
+                f"  {code} matched pace: "
+                f"short {short}/{len(data['drivers'])}; "
+                f"long {long}/{len(data['drivers'])} drivers"
+            )
     previous = schedule[schedule.RoundNumber < int(event["RoundNumber"])].to_dict("records")
     all_data, usable_events = {}, []
     for past in previous:
