@@ -502,7 +502,23 @@ def run(args):
     if pd.isna(target_start):
         raise ValueError("Target session start time is unavailable; cannot establish a safe cutoff.")
     if now >= target_start:
-        raise ValueError("The selected session has already started. Choose a future session, or use --as-of with a UTC time before its start for a historical replay.")
+        print(f"The scheduled start for {args.session} has passed.")
+        print("It may be ongoing or finished; live status is not checked.")
+        print("Continue using only completed sessions from before the target?")
+
+        try:
+            answer = input("Continue? [y/N]: ").strip().casefold()
+        except EOFError:
+            raise ValueError(
+                "No confirmation received. Run interactively or supply "
+                "--as-of before the target start."
+            ) from None
+
+        if answer not in {"y", "yes"}:
+            raise ValueError("Prediction cancelled.")
+
+        now = target_start - pd.Timedelta(seconds=1)
+        print(f"Pre-session replay cutoff: {now.isoformat()}")
     tracks = read_tracks(args.tracks)
     store = Store(args.year, now, args.refresh)
     print(f"Target: {args.year} {event['EventName']} / {args.session}. Cutoff: {now.isoformat()}")
