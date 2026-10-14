@@ -75,7 +75,7 @@ Try a hypothetical wet, 30 C race:
   python predict_anytime.py --year 2026 --race Singapore --session race --air-temp 30 --wet 1
 Apply a manually verified grid after qualifying:
   python predict_anytime.py --year 2026 --race Singapore --session race --grid grid.csv
-For an already-started target, these examples also need a suitable --as-of.
+For an already-started target, confirm the automatic pre-session replay prompt or supply a suitable --as-of cutoff.
 Flags can be combined. Supplied relative paths use the terminal folder;
 quote paths containing spaces. The default tracks.csv uses the script folder.
 
@@ -109,11 +109,53 @@ whether rain was reported, using the latest available observations per field.
 There is no forecast API. With no observations, weather stays missing unless
 overridden. Manual scenarios may or may not change the model output.
 
+PACE AND TYRE ANALYSIS
+Pace calculations exclude pit laps, inaccurate/deleted laps and laps without
+an all-clear track status. Classified finishing positions remain available.
+
+Practice short-run comparisons:
+- Match compound, fresh/used status, tyre-age group and ten-minute window.
+- Use tyres aged 1-5 laps.
+- Take each driver's fastest lap within each matching group, then their
+  median percentage gap across groups.
+- Require at least two drivers per comparison group.
+
+Longer-run comparisons:
+- Require at least four consecutive valid laps within the same stint,
+  compound and fresh/used status. Filtered-out laps break consecutive runs.
+- Older tyres are allowed; there is no five-lap tyre-age limit.
+- Match three-lap tyre-age groups: 1-3, 4-6, 7-9, and so on.
+- Compare within ten-minute practice windows or five-lap race/Sprint windows.
+- Use median lap times, requiring at least two laps per driver and two
+  drivers within each comparison group.
+
+Unmatched pace stays missing. No fixed soft/medium/hard time correction is
+invented. These grouping thresholds are experimental assumptions.
+
+The net stint pace trend measures whether lap times increase or decrease.
+It does not isolate tyre deterioration from fuel burn or changing conditions.
+
+Sprint inputs include sustained pace, classified position, finishing gap,
+completion, grid-position gains and safety-car/red-flag disruption.
+Finishing gap is expressed as a percentage of the winner's race duration;
+it is missing for retired/lapped drivers or unavailable timing.
+It is result context, not a direct measurement of underlying race pace.
+
+The model no longer uses raw practice/Sprint fastest-lap gaps as pace inputs.
+Qualifying and Sprint Qualifying retain their existing position/gap inputs.
+
+Matched-pace messages show how many drivers have usable comparisons.
+Sprint short coverage is intentionally zero; Sprint uses longer-run pace.
+
+Fuel correction, traffic filtering, isolated tyre deterioration and refinements
+to the comparison groups are deferred. Tyre-aware matching does not guarantee
+improved prediction accuracy.
+
 OUTPUTS AND CACHE
 On your Windows setup:
   C:\Users\Yi Wei Toh\F1Data\cache\fastf1
     Downloaded FastF1 data.
-  C:\Users\Yi Wei Toh\F1Data\cache\anytime_v1\<year>
+  C:\Users\Yi Wei Toh\F1Data\cache\anytime_v3_pace\<year>
     Compact completed-session summaries.
   C:\Users\Yi Wei Toh\F1Data\outputs\<year>_<round>_<session>\latest
     Latest outputs for that event and target session.
@@ -154,17 +196,23 @@ first-place picks. Driver score errors set the shared simulation noise.
 The final model trains on all usable earlier examples, then samples rankings.
 There is no lap-by-lap race simulation or additional retirement lottery.
 
-Fastest usable lap gaps are not adjusted for compound, tyre age or fuel.
-Sprint gap is fastest-lap gap, not finishing-time gap to the winner.
 There are no explicit percentage weights prioritising particular sessions.
 No automatic target penalties, forecast or quantified upgrade effect exists.
 No built-in pole/grid-first benchmark or probability calibration exists.
 Four backtests alone do not establish reliable prediction accuracy.
 
 This is a new reusable pipeline adapted from earlier work, not an exact copy
-or a demonstrated accuracy improvement. Proposed changes are not implemented
-until they appear in the code. Local authoring checks used offline stand-ins;
-live FastF1 downloads and real XGBoost fits were not verified there.
+or a demonstrated accuracy improvement. Planned features are not implemented
+until they appear in the code.
+
+Validation for the pace-and-tyres branch:
+- 19 offline calculation/integration tests passed locally and on Windows.
+- A Singapore pre-race replay completed on the user's Windows environment,
+  including FastF1 session loading, XGBoost training and prediction output.
+- That run found matched short practice pace for 22/22 drivers, longer-run
+  practice pace for 8/22, and longer-run Sprint pace for 14/22.
+- The historical winner-pick backtest remained 1/4. These checks establish
+  successful execution, not improved predictive accuracy.
 
 REFERENCES / ATTRIBUTION
 Starting-point scripts by farhansh911:
