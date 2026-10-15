@@ -18,12 +18,13 @@ weekends are tested chronologically, with no future labels used for features.
 Pooling Sprint and normal sessions is a practical small-data assumption, not
 evidence they are identical. Backtests are small and probabilities uncalibrated.
 
-TRACKS: Existing location,grid_stickiness CSVs work. Optional recognized columns
-are length_km,longest_straight_km,slow_corner_fraction,high_speed_fraction,street.
-Fractions/street/grid_stickiness are 0..1; lengths are km. Use one consistent,
-verified definition of corner/speed fractions across circuits. Similar-track
-form needs at least two geometry descriptors on BOTH circuits; otherwise it
-stays missing. No extra measurements are invented or downloaded by this script.
+TRACKS: Optional numeric geometry descriptors remain supported. tracks.csv also
+supports documented overlapping straight/corner/braking/traction/tyre groups
+and profile_source. Keep circuit_sections.py beside this script. Completed
+eligible sessions can supply approximate tyre-matched section telemetry.
+Source-related result form is separate from measured section pace. Whole-lap
+section suitability requires substantial coverage; missing data stays missing.
+Section thresholds and source-group factors are experimental, not calibrated.
 
 WEATHER/UPGRADES: Observed weather comes from completed sessions, not forecasts.
 --air-temp and --wet are manual scenario overrides. There is no upgrade-news
@@ -54,6 +55,8 @@ import re
 from pathlib import Path
 import numpy as np
 import pandas as pd
+from circuit_sections import (GROUP_COLUMNS, summarize_sections,
+                              historical_section_features, target_sections)
 
 ROOT = Path(__file__).resolve().parent
 DATA_ROOT = Path.home() / "F1Data"
@@ -138,7 +141,9 @@ def read_tracks(path):
     if not path.exists():
         print("No tracks.csv: circuit descriptors will be missing. Predictions use performance data.")
         return {}
-    frame = pd.read_csv(path, encoding="utf-8-sig")
+    frame = pd.read_csv(
+        path, encoding="utf-8-sig", sep=None, engine="python"
+    )
     if "location" not in frame or frame.location.isna().any() or frame.location.duplicated().any():
         raise ValueError("tracks.csv needs one unique, nonblank location per row.")
     result = {}
@@ -150,6 +155,9 @@ def read_tracks(path):
         for key in ("length_km", "longest_straight_km"):
             if np.isfinite(values[key]) and values[key] <= 0:
                 raise ValueError(f"{row['location']}: {key} must be positive.")
+        for key in GROUP_COLUMNS + ("profile_source",):
+            value = row.get(key)
+            values[key] = "" if pd.isna(value) else str(value).strip()
         result[str(row["location"])] = values
     return result
 
@@ -396,6 +404,7 @@ def summarize(session, code):
         lap_counts = laps.groupby("Driver").size().to_dict()
     fastest = min(best.values()) if best else np.nan
     pace = tyre_pace_summary(laps, code)
+    section_analysis = summarize_sections(session, laps, code)
     context = (
         race_session_context(results, raw_laps)
         if code in RACE_TYPES else {}
@@ -417,6 +426,7 @@ def summarize(session, code):
                         "grid": number(row.get("GridPosition")),
                         "gap_pct": 100 * (lap / fastest - 1) if np.isfinite(lap) and np.isfinite(fastest) else np.nan,
                         "laps": float(lap_counts.get(driver, 0)),
+                        "sections": section_analysis.get("drivers", {}).get(driver, []),
                         **pace.get(driver, {}),
                         **context.get(driver, {})})
     try:
@@ -427,13 +437,16 @@ def summarize(session, code):
     for column in ("AirTemp", "TrackTemp", "Rainfall"):
         values = pd.to_numeric(weather[column], errors="coerce").dropna() if column in weather else pd.Series(dtype=float)
         observed[column] = float(values.max() if column == "Rainfall" else values.median()) if len(values) else np.nan
-    return {"code": code, "drivers": drivers, "weather": observed}
+    # Driver evidence is already attached above; avoid duplicating it in JSON.
+    section_analysis = {k: v for k, v in section_analysis.items() if k != "drivers"}
+    return {"code": code, "drivers": drivers, "weather": observed,
+            "section_analysis": section_analysis}
 
 
 class Store:
     def __init__(self, year, now, refresh=False):
         self.year, self.now, self.refresh = year, now, refresh
-        self.folder = CACHE_ROOT / "anytime_v3_pace" / str(year)
+        self.folder = CACHE_ROOT / "anytime_v4_sections" / str(year)
         self.memory = {}
 
     def get(self, event, code):
@@ -448,7 +461,7 @@ class Store:
         path = self.folder / f"{rnd:02d}_{code}.json"
         if path.exists() and not self.refresh:
             saved = json.loads(path.read_text(encoding="utf-8"))
-            if saved.get("schema") == 3 and saved.get("event") == event["EventName"]:
+            if saved.get("schema") == 4 and saved.get("event") == event["EventName"]:
                 end = pd.to_datetime(saved.get("completed_utc"), utc=True, errors="coerce")
                 if pd.notna(end) and end < self.now:
                     self.memory[key] = saved["data"]
@@ -458,8 +471,8 @@ class Store:
             # Retry recently published sessions against the server, rather than
             # repeatedly reading a partial FastF1 cache from an earlier attempt.
             fastf1.Cache.enable_cache(str(CACHE_ROOT / "fastf1"),
-                                     force_renew=self.refresh or self.now - start < pd.Timedelta(days=3))
-            print(f"  Building pace summary R{rnd} {code}", flush=True)
+                                     force_renew=self.refresh)
+            print(f"  Building section summary R{rnd} {code}", flush=True)
             session = fastf1.get_session(self.year, rnd, code)
             session.load(laps=True, telemetry=True, weather=True, messages=True)
             statuses = pd.DataFrame(session.session_status)
@@ -482,7 +495,7 @@ class Store:
             self.memory[key] = None
             return None
         self.folder.mkdir(parents=True, exist_ok=True)
-        payload = {"schema": 3, "event": event["EventName"], "completed_utc": completed.isoformat(), "data": data}
+        payload = {"schema": 4, "event": event["EventName"], "completed_utc": completed.isoformat(), "data": data}
         temp = path.with_suffix(".tmp")
         temp.write_text(json.dumps(json_safe(payload)), encoding="utf-8")
         temp.replace(path)
@@ -587,6 +600,12 @@ def features(driver, target_code, event, history, inputs, tracks):
             for field, key in (("AirTemp", "known_air_temp"), ("TrackTemp", "known_track_temp"), ("Rainfall", "known_rain")):
                 if np.isfinite(number(weather.get(field))):
                     row[key] = number(weather[field])
+    for label in ("qualifying", "race"):
+        extra, _ = historical_section_features(
+            code, label, int(event["RoundNumber"]), history, inputs,
+            tracks, event["Location"]
+        )
+        row.update(extra)
     return row
 
 
@@ -671,7 +690,12 @@ def fit(frame, columns):
 
 
 def train_and_check(frame, target_code):
-    columns = [c for c in frame.columns if c not in {"label", "event_round", "target_session", "driver"}]
+    excluded = {"label", "event_round", "target_session", "driver"}
+    # Section timings remain inspectable, but are not validated model inputs.
+    columns = [
+        c for c in frame.columns
+        if c not in excluded and "_section_" not in c
+    ]
     rounds = sorted(frame.event_round.unique())
     if len(rounds) < 4:
         raise ValueError("Need usable history from at least four earlier weekends in this season.")
@@ -741,7 +765,7 @@ def run(args):
     cache = CACHE_ROOT / "fastf1"
     cache.mkdir(parents=True, exist_ok=True)
     fastf1.Cache.enable_cache(str(cache), force_renew=args.refresh)
-    logging.getLogger("fastf1").setLevel(logging.ERROR)
+    fastf1.set_log_level("ERROR")
     schedule = pd.DataFrame(fastf1.get_event_schedule(args.year, include_testing=False))
     schedule = schedule[schedule.RoundNumber > 0].sort_values("RoundNumber")
     if args.list_races:
@@ -873,9 +897,35 @@ def run(args):
         print("Weather override is your scenario, not an automatically fetched forecast.")
     if not any(np.isfinite(number(v)) for v in tracks.get(event["Location"], {}).values()):
         print("No usable target circuit descriptors in tracks.csv.")
-    if inputs.filter(like="similar_tracks").isna().all().all():
-        print("Track-similarity form unavailable: add at least two matching geometry columns for target and historical circuits.")
-    print(f"Training on {len(frame)} driver-session examples from {frame.event_round.nunique()} earlier weekends.")
+    circuit_columns = inputs.filter(regex=r"_(similar_tracks|related_circuit_form|section_gap_pct)$")
+    if circuit_columns.isna().all().all():
+        print("Circuit suitability unavailable: insufficient geometry, sourced relationships or section evidence.")
+    section_family = "race" if target in RACE_TYPES else "qualifying"
+    section_source, section_profile = target_sections(current, section_family)
+    for code, data in current.items():
+        info = data.get("section_analysis", {})
+        print(f"  {code} section analysis: {info.get('status', 'not available')}; "
+              f"{info.get('sampled_laps', 0)} sampled laps, "
+              f"{info.get('failed_laps', 0)} rejected telemetry traces.")
+    section_evidence = []
+    for name in names:
+        _, evidence = historical_section_features(
+            name, section_family, int(event["RoundNumber"]), history,
+            current, tracks, event["Location"]
+        )
+        section_evidence.extend(evidence)
+    if section_source:
+        coverage = inputs[section_family + "_section_coverage"]
+        print(f"Section reference: current {section_source}; historical coverage "
+              f"{100 * coverage.min():.0f}..{100 * coverage.max():.0f}% across drivers.")
+        print("Section matches are approximate; no fuel/traffic/banking correction.")
+    else:
+        print("Section suitability unavailable: no usable pre-target circuit telemetry.")
+    print(
+        f"Training on {len(frame)} driver-session examples "
+        f"from {frame.event_round.nunique()} earlier weekends."
+    )
+    print("Section pace: diagnostic only; excluded from model training and predictions.")
     model, columns, sigma, tests = train_and_check(frame, target)
     scores = model.predict(inputs[columns])
     win, top3, average = simulate(scores, sigma, args.simulations)
@@ -898,12 +948,35 @@ def run(args):
     inputs.assign(driver=names).to_csv(folder / "prediction_inputs.csv", index=False)
     pd.DataFrame(tests).to_csv(folder / "backtest.csv", index=False)
     model.save_model(folder / "model.json")
+    evidence_columns = ["driver", "family", "target_section", "kind", "target_share",
+                        "historical_round", "historical_session", "historical_location",
+                        "match_score", "source_factor", "weight", "gap_pct"]
+    pd.DataFrame(section_evidence, columns=evidence_columns).to_csv(
+        folder / "section_evidence.csv", index=False)
+    pd.DataFrame(section_profile, columns=["start", "end", "kind", "seconds", "length",
+                                          "speed", "share", "condition"]).to_csv(
+        folder / "target_sections.csv", index=False)
     metadata = {"target": args.session, "event": event["EventName"], "as_of": now.isoformat(),
                 "used_sessions": list(current), "roster_source": roster_source,
                 "weather": "latest available session observations or manual scenario; no forecast API",
                 "manual_weather": {"air_temp": args.air_temp, "wet": args.wet},
                 "grid_source": str(args.grid) if args.grid else "qualifying order when available",
                 "sigma_normalized_positions": sigma, "simulations": args.simulations,
+                "model_features": columns,
+                "section_pace_model_inputs": False,
+                "section_analysis": {
+                    "reference_session": section_source,
+                    "minimum_overall_coverage": 0.70,
+                    "minimum_historical_weekends": 2,
+                    "maximum_speed_difference_kmh": 40,
+                    "minimum_section_length_m": 30,
+                    "minimum_section_duration_s": 0.3,
+                    "section_length_ratio_range": [0.5, 2.0],
+                    "documented_group_factor": 1.0,
+                    "undocumented_group_factor": 0.75,
+                    "recency_per_round": 0.85,
+                    "limits": "Approximate marker windows and reference-lap speed bands; no fuel, traffic, gradient, banking or battery correction. Thresholds not calibrated."
+                },
                 "tracks": tracks, "upgrades": "not separately measured or modelled",
                 "historical_data": "current published revisions, not archived as-of snapshots"}
     (folder / "run_info.json").write_text(json.dumps(json_safe(metadata), indent=2), encoding="utf-8")

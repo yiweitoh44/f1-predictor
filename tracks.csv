@@ -1,24 +1,24 @@
-location,grid_stickiness,basis
-Melbourne,0.62,Inherited author assumption; not calibrated
-Shanghai,0.58,Inherited author assumption; not calibrated
-Suzuka,0.70,Inherited author assumption; not calibrated
-Miami Gardens,0.68,Inherited author assumption; not calibrated
-Montréal,0.55,Inherited author assumption; not calibrated
-Monte Carlo,0.95,Inherited author assumption; not calibrated
-Barcelona,0.78,Inherited author assumption; not calibrated
-Spielberg,0.48,Inherited author assumption; not calibrated
-Silverstone,0.50,Inherited author assumption; not calibrated
-Spa-Francorchamps,0.42,Inherited author assumption; not calibrated
-Budapest,0.84,Inherited author assumption; not calibrated
-Zandvoort,0.72,Inherited author assumption; not calibrated
-Monza,0.38,Inherited author assumption; not calibrated
-Madrid,0.60,Inherited author assumption; not calibrated
-Baku,0.70,Inherited author assumption; not calibrated
-Kuala Lumpur,0.55,Inherited author assumption; not calibrated
-Marina Bay,0.65,Generic original default; Singapore-specific value not validated
-Austin,0.65,Generic placeholder; not circuit-calibrated
-Mexico City,0.65,Generic placeholder; not circuit-calibrated
-São Paulo,0.65,Generic placeholder; not circuit-calibrated
-Las Vegas,0.65,Generic placeholder; not circuit-calibrated
-Lusail,0.65,Generic placeholder; not circuit-calibrated
-Yas Marina,0.65,Generic placeholder; not circuit-calibrated
+location	grid_stickiness	basis	straight_groups	corner_groups	braking_groups	traction_groups	tyre_groups	profile_source
+Melbourne	0.62	Inherited author assumption; not calibrated						
+Shanghai	0.58	Inherited author assumption; not calibrated					sepang_comparable_severity	https://press.pirelli.com/sepang-reopens-its-doors-to-formula-1-after-nine-years/
+Suzuka	0.70	Inherited author assumption; not calibrated		high_lateral_load|esses_sequence				https://press.pirelli.com/to-suzuka-for-something-new-and-something-old/ | https://press.pirelli.com/a-texas-rodeo-with-a-jump-in-compounds/
+Miami Gardens	0.68	Inherited author assumption; not calibrated						
+Montréal	0.55	Inherited author assumption; not calibrated	long_straights_slow_turns		brake_stress			https://media.mercedesamgf1.com/marsF1/en/instance/ko/2025-Canadian-Grand-Prix---Preview.xhtml?oid=194092588 | https://media.mercedesamgf1.com/marsF1/en/instance/ko/2025-Canadian-Grand-Prix---Preview.xhtml?oid=194092588
+Monte Carlo	0.95	Inherited author assumption; not calibrated				slow_traction		https://press.pirelli.com/the-jewel-of-formula-1-history-and-glamour-at-the-monaco-gp/
+Barcelona	0.78	Inherited author assumption; not calibrated		high_lateral_load				https://press.pirelli.com/to-suzuka-for-something-new-and-something-old/
+Spielberg	0.48	Inherited author assumption; not calibrated			brake_stress			https://media.mercedesamgf1.com/marsF1/en/instance/ko/2025-Canadian-Grand-Prix---Preview.xhtml?oid=194092588
+Silverstone	0.50	Inherited author assumption; not calibrated		high_lateral_load|esses_sequence				https://press.pirelli.com/to-suzuka-for-something-new-and-something-old/ | https://press.pirelli.com/a-texas-rodeo-with-a-jump-in-compounds/
+Spa-Francorchamps	0.42	Inherited author assumption; not calibrated		high_lateral_load			sepang_comparable_severity	https://press.pirelli.com/to-suzuka-for-something-new-and-something-old/ | https://press.pirelli.com/sepang-reopens-its-doors-to-formula-1-after-nine-years/
+Budapest	0.84	Inherited author assumption; not calibrated				slow_traction		https://press.pirelli.com/the-heat-is-on-in-budapest/
+Zandvoort	0.72	Inherited author assumption; not calibrated		high_lateral_load				https://press.pirelli.com/to-suzuka-for-something-new-and-something-old/
+Monza	0.38	Inherited author assumption; not calibrated	low_drag_top_speed					https://press.pirelli.com/viva-las-vegas/
+Madrid	0.60	Inherited author assumption; not calibrated						
+Baku	0.70	Inherited author assumption; not calibrated	low_drag_top_speed|long_straights_slow_turns					https://press.pirelli.com/viva-las-vegas/ | https://media.mercedesamgf1.com/marsF1/en/instance/ko/2025-Canadian-Grand-Prix---Preview.xhtml?oid=194092588
+Kuala Lumpur	0.55	Inherited author assumption; not calibrated					sepang_comparable_severity	https://press.pirelli.com/sepang-reopens-its-doors-to-formula-1-after-nine-years/
+Marina Bay	0.65	Generic original default; Singapore-specific value not validated				slow_traction		https://press.pirelli.com/spotlight-on-singapore/
+Austin	0.65	Generic placeholder; not circuit-calibrated		esses_sequence				https://press.pirelli.com/a-texas-rodeo-with-a-jump-in-compounds/
+Mexico City	0.65	Generic placeholder; not circuit-calibrated						
+São Paulo	0.65	Generic placeholder; not circuit-calibrated						
+Las Vegas	0.65	Generic placeholder; not circuit-calibrated	low_drag_top_speed					https://press.pirelli.com/viva-las-vegas/
+Lusail	0.65	Generic placeholder; not circuit-calibrated		high_lateral_load				https://press.pirelli.com/to-suzuka-for-something-new-and-something-old/
+Yas Marina	0.65	Generic placeholder; not circuit-calibrated						
