@@ -19,12 +19,12 @@ Pooling Sprint and normal sessions is a practical small-data assumption, not
 evidence they are identical. Backtests are small and probabilities uncalibrated.
 
 TRACKS: Optional numeric geometry descriptors remain supported. tracks.csv also
-supports documented overlapping straight/corner/braking/traction/tyre groups
+supports manual overlapping straight/corner/braking/traction/tyre groups
 and profile_source. Keep circuit_sections.py beside this script. Completed
-eligible sessions can supply approximate tyre-matched section telemetry.
-Source-related result form is separate from measured section pace. Whole-lap
-section suitability requires substantial coverage; missing data stays missing.
-Section thresholds and source-group factors are experimental, not calibrated.
+sessions supply results for manual category matching. Straights, corners,
+braking, traction and tyre demands can overlap. Category weights are manual
+starting assumptions. Section telemetry is not downloaded or calculated in
+normal runs and all section-pace columns remain excluded from model fitting.
 
 WEATHER/UPGRADES: Observed weather comes from completed sessions, not forecasts.
 --air-temp and --wet are manual scenario overrides. There is no upgrade-news
@@ -36,16 +36,18 @@ assumed unchanged. FP reserve-driver substitutions also need checking. Supply
 order; use --grid driver,grid CSV with every driver once after qualifying to
 account for penalties. Pit-lane starters can only be approximated at the back.
 
-OUTPUTS: outputs_anytime/year_round_session/stage holds predictions, training,
-prediction_inputs, backtest CSVs, model.json and run_info.json. A rerun of the
-same stage replaces that stage's files. Results from different stages persist.
-Use --refresh for corrected data. --as-of allows historical replay, but uses
-today's published historical revisions, not original archived data snapshots.
+OUTPUTS: ~/F1Data/outputs/year_round_session/latest holds predictions, training,
+prediction_inputs, backtest CSVs, model.json, run_info.json and section diagnostic
+CSVs. Rerunning the same event/session replaces its latest files. Raw caches
+are retained. --refresh explicitly renews data; --offline uses cached data only.
+--as-of allows historical replay, but uses today's published historical
+revisions, not original archived data snapshots.
 
-VALIDATION: Syntax, CLI and offline stage/cutoff/cache/simulation checks passed.
-FastF1 network calls and real XGBoost fitting could not be exercised in the
-authoring environment. Offline integration checks used stand-ins for those two
-components. No live result or prediction-accuracy improvement is claimed.
+VALIDATION: Regression tests, native XGBoost fitting and cached-data replays
+passed. An archived Hungary sample reproduced the extreme section gaps; stale
+position traces are now rejected. Driver-to-driver section alignment remains
+unvalidated. Live timing downloads remain blocked in the cloud environment.
+Section pace is disabled, excluded from model training and predictions. No prediction-accuracy improvement is claimed.
 """
 from __future__ import annotations
 import argparse
@@ -55,13 +57,14 @@ import re
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from circuit_sections import (GROUP_COLUMNS, summarize_sections,
-                              historical_section_features, target_sections)
+from circuit_sections import (GROUP_COLUMNS, GROUP_WEIGHTS, circuit_group_match,
+                              historical_section_features)
 
 ROOT = Path(__file__).resolve().parent
 DATA_ROOT = Path.home() / "F1Data"
 CACHE_ROOT = DATA_ROOT / "cache"
 OUTPUT_ROOT = DATA_ROOT / "outputs"
+SUMMARY_SCHEMA = 5
 SESSION_NAMES = {"Practice 1": "FP1", "Practice 2": "FP2", "Practice 3": "FP3",
                  "Sprint Qualifying": "SQ", "Sprint Shootout": "SQ",
                  "Sprint": "S", "Qualifying": "Q", "Race": "R"}
@@ -155,7 +158,7 @@ def read_tracks(path):
         for key in ("length_km", "longest_straight_km"):
             if np.isfinite(values[key]) and values[key] <= 0:
                 raise ValueError(f"{row['location']}: {key} must be positive.")
-        for key in GROUP_COLUMNS + ("profile_source",):
+        for key in GROUP_COLUMNS + ("profile_source", "profile_basis"):
             value = row.get(key)
             values[key] = "" if pd.isna(value) else str(value).strip()
         result[str(row["location"])] = values
@@ -362,6 +365,8 @@ def race_session_context(results, raw_laps):
     return output
 
 def summarize(session, code):
+    from fastf1.exceptions import DataNotLoadedError
+
     # FastF1 uses pandas subclasses. Convert to ordinary frames before validation.
     results = pd.DataFrame(session.results).copy()
     if results.empty or "Abbreviation" not in results:
@@ -377,7 +382,14 @@ def summarize(session, code):
     pos = pos.mask(invalid)
     pos = pos.mask(pos.duplicated(keep=False) & pos.notna())
     results["Position"] = pos
-    raw_laps = pd.DataFrame(session.laps).copy()
+    lap_data_loaded = True
+    try:
+        raw_laps = pd.DataFrame(session.laps).copy()
+    except DataNotLoadedError:
+        # A classified old competitive session can still inform results/form.
+        # Missing timing supplies no pace evidence and cannot validate practice.
+        raw_laps = pd.DataFrame()
+        lap_data_loaded = False
     laps = raw_laps.copy()
     best, lap_counts = {}, {}
     if not laps.empty and {"Driver", "LapTime"}.issubset(laps.columns):
@@ -404,7 +416,8 @@ def summarize(session, code):
         lap_counts = laps.groupby("Driver").size().to_dict()
     fastest = min(best.values()) if best else np.nan
     pace = tyre_pace_summary(laps, code)
-    section_analysis = summarize_sections(session, laps, code)
+    section_analysis = {"status": "disabled: manual circuit categories only",
+                        "profile": [], "drivers": {}}
     context = (
         race_session_context(results, raw_laps)
         if code in RACE_TYPES else {}
@@ -425,7 +438,7 @@ def summarize(session, code):
                         "position_norm": (position - 1) / max(1, n - 1),
                         "grid": number(row.get("GridPosition")),
                         "gap_pct": 100 * (lap / fastest - 1) if np.isfinite(lap) and np.isfinite(fastest) else np.nan,
-                        "laps": float(lap_counts.get(driver, 0)),
+                        "laps": float(lap_counts.get(driver, 0)) if lap_data_loaded else np.nan,
                         "sections": section_analysis.get("drivers", {}).get(driver, []),
                         **pace.get(driver, {}),
                         **context.get(driver, {})})
@@ -440,14 +453,41 @@ def summarize(session, code):
     # Driver evidence is already attached above; avoid duplicating it in JSON.
     section_analysis = {k: v for k, v in section_analysis.items() if k != "drivers"}
     return {"code": code, "drivers": drivers, "weather": observed,
+            "lap_data_loaded": lap_data_loaded,
             "section_analysis": section_analysis}
 
 
+def completed_session_time(session, start, cutoff):
+    """Use published finalisation, or the existing conservative past-day rule.
+
+    FastF1 raises when a channel was not loaded; that must not prevent the
+    explicit fallback from being evaluated. Classifications are validated by
+    summarize before any such competitive session is retained.
+    """
+    from fastf1.exceptions import DataNotLoadedError
+
+    try:
+        statuses = pd.DataFrame(session.session_status)
+    except DataNotLoadedError:
+        statuses = pd.DataFrame()
+    completed = pd.NaT
+    if {"Status", "Time"}.issubset(statuses.columns):
+        final = statuses[statuses.Status.astype(str).str.casefold().isin(["finalised", "finalized"])]
+        if not final.empty and pd.notna(session.t0_date):
+            completed = pd.to_datetime(session.t0_date, utc=True) + pd.to_timedelta(final.Time.iloc[-1])
+    if pd.isna(completed):
+        if cutoff < start + pd.Timedelta(days=1):
+            raise ValueError("session not confirmed finalised yet")
+        completed = start + pd.Timedelta(days=1)
+    return completed
+
+
 class Store:
-    def __init__(self, year, now, refresh=False):
-        self.year, self.now, self.refresh = year, now, refresh
-        self.folder = CACHE_ROOT / "anytime_v4_sections" / str(year)
+    def __init__(self, year, now, refresh=False, offline=False):
+        self.year, self.now, self.refresh, self.offline = year, now, refresh, offline
+        self.folder = CACHE_ROOT / f"anytime_v{SUMMARY_SCHEMA}_sections" / str(year)
         self.memory = {}
+        self.unavailable = []
 
     def get(self, event, code):
         rnd = int(event["RoundNumber"])
@@ -461,41 +501,37 @@ class Store:
         path = self.folder / f"{rnd:02d}_{code}.json"
         if path.exists() and not self.refresh:
             saved = json.loads(path.read_text(encoding="utf-8"))
-            if saved.get("schema") == 4 and saved.get("event") == event["EventName"]:
+            if saved.get("schema") == SUMMARY_SCHEMA and saved.get("event") == event["EventName"]:
                 end = pd.to_datetime(saved.get("completed_utc"), utc=True, errors="coerce")
                 if pd.notna(end) and end < self.now:
                     self.memory[key] = saved["data"]
                     return saved["data"]
         import fastf1
         try:
-            # Retry recently published sessions against the server, rather than
-            # repeatedly reading a partial FastF1 cache from an earlier attempt.
+            # Reuse raw data normally; replay clocks must not force downloads.
             fastf1.Cache.enable_cache(str(CACHE_ROOT / "fastf1"),
                                      force_renew=self.refresh)
-            print(f"  Building section summary R{rnd} {code}", flush=True)
+            if self.offline:
+                fastf1.Cache.offline_mode(True)
+            print(f"  Building session summary R{rnd} {code}", flush=True)
             session = fastf1.get_session(self.year, rnd, code)
-            session.load(laps=True, telemetry=True, weather=True, messages=True)
-            statuses = pd.DataFrame(session.session_status)
-            completed = pd.NaT
-            if {"Status", "Time"}.issubset(statuses.columns):
-                final = statuses[statuses.Status.astype(str).str.casefold().isin(["finalised", "finalized"]) ]
-                if not final.empty and pd.notna(session.t0_date):
-                    completed = pd.to_datetime(session.t0_date, utc=True) + pd.to_timedelta(final.Time.iloc[-1])
-            # Fail closed for live/incomplete sessions. Old published classifications
-            # may lack status timing; allow only with a conservative past-day cutoff.
-            if pd.isna(completed):
-                if self.now < start + pd.Timedelta(days=1):
-                    raise ValueError("session not confirmed finalised yet")
-                completed = start + pd.Timedelta(days=1)
+            session.load(laps=True, telemetry=False, weather=True, messages=True)
+            completed = completed_session_time(session, start, self.now)
             if completed >= self.now:
+                self.unavailable.append({"round": rnd, "session": code,
+                                         "reason": "completion is not before cutoff"})
                 return None
             data = summarize(session, code)
+            if not data["lap_data_loaded"]:
+                print(f"  R{rnd} {code}: classifications only; lap timing/pace unavailable.")
         except Exception as exc:
             print(f"  R{rnd} {code} unavailable: {type(exc).__name__}: {str(exc)[:130]}")
+            self.unavailable.append({"round": rnd, "session": code,
+                                     "reason": type(exc).__name__ + ": " + str(exc)})
             self.memory[key] = None
             return None
         self.folder.mkdir(parents=True, exist_ok=True)
-        payload = {"schema": 4, "event": event["EventName"], "completed_utc": completed.isoformat(), "data": data}
+        payload = {"schema": SUMMARY_SCHEMA, "event": event["EventName"], "completed_utc": completed.isoformat(), "data": data}
         temp = path.with_suffix(".tmp")
         temp.write_text(json.dumps(json_safe(payload)), encoding="utf-8")
         temp.replace(path)
@@ -602,8 +638,8 @@ def features(driver, target_code, event, history, inputs, tracks):
                     row[key] = number(weather[field])
     for label in ("qualifying", "race"):
         extra, _ = historical_section_features(
-            code, label, int(event["RoundNumber"]), history, inputs,
-            tracks, event["Location"]
+            code, label, int(event["RoundNumber"]), history, {},
+            tracks, event["Location"], team=team
         )
         row.update(extra)
     return row
@@ -765,6 +801,7 @@ def run(args):
     cache = CACHE_ROOT / "fastf1"
     cache.mkdir(parents=True, exist_ok=True)
     fastf1.Cache.enable_cache(str(cache), force_renew=args.refresh)
+    fastf1.Cache.offline_mode(args.offline)
     fastf1.set_log_level("ERROR")
     schedule = pd.DataFrame(fastf1.get_event_schedule(args.year, include_testing=False))
     schedule = schedule[schedule.RoundNumber > 0].sort_values("RoundNumber")
@@ -799,7 +836,7 @@ def run(args):
         now = target_start - pd.Timedelta(seconds=1)
         print(f"Pre-session replay cutoff: {now.isoformat()}")
     tracks = read_tracks(args.tracks)
-    store = Store(args.year, now, args.refresh)
+    store = Store(args.year, now, args.refresh, args.offline)
     print(f"Target: {args.year} {event['EventName']} / {args.session}. Cutoff: {now.isoformat()}")
     current = {}
     for code in allowed:
@@ -823,12 +860,13 @@ def run(args):
                 f"long {long}/{len(data['drivers'])} drivers"
             )
     previous = schedule[schedule.RoundNumber < int(event["RoundNumber"])].to_dict("records")
-    all_data, usable_events = {}, []
+    all_data, usable_events, requested_rounds = {}, [], []
     for past in previous:
         # Some earlier rounds may also still be in the future for a distant target.
         if not any(pd.notna(t) and t < now for _, t in session_schedule(past)):
             continue
         rnd = int(past["RoundNumber"])
+        requested_rounds.append(rnd)
         #print(f"Loading earlier weekend R{rnd}: {past['EventName']}", flush=True)
         available = {}
         for code, _ in session_schedule(past):
@@ -895,44 +933,39 @@ def run(args):
             inputs[field] = value
     if args.air_temp is not None or args.wet is not None:
         print("Weather override is your scenario, not an automatically fetched forecast.")
-    if not any(np.isfinite(number(v)) for v in tracks.get(event["Location"], {}).values()):
+    target_track = tracks.get(event["Location"], {})
+    if not (any(np.isfinite(number(target_track.get(k))) for k in TRACK_SCALES)
+            or any(target_track.get(k) for k in GROUP_COLUMNS)):
         print("No usable target circuit descriptors in tracks.csv.")
     circuit_columns = inputs.filter(regex=r"_(similar_tracks|related_circuit_form|section_gap_pct)$")
     if circuit_columns.isna().all().all():
-        print("Circuit suitability unavailable: insufficient geometry, sourced relationships or section evidence.")
-    section_family = "race" if target in RACE_TYPES else "qualifying"
-    section_source, section_profile = target_sections(current, section_family)
-    for code, data in current.items():
-        info = data.get("section_analysis", {})
-        print(f"  {code} section analysis: {info.get('status', 'not available')}; "
-              f"{info.get('sampled_laps', 0)} sampled laps, "
-              f"{info.get('failed_laps', 0)} rejected telemetry traces.")
-    section_evidence = []
-    for name in names:
-        _, evidence = historical_section_features(
-            name, section_family, int(event["RoundNumber"]), history,
-            current, tracks, event["Location"]
-        )
-        section_evidence.extend(evidence)
-    if section_source:
-        coverage = inputs[section_family + "_section_coverage"]
-        print(f"Section reference: current {section_source}; historical coverage "
-              f"{100 * coverage.min():.0f}..{100 * coverage.max():.0f}% across drivers.")
-        print("Section matches are approximate; no fuel/traffic/banking correction.")
-    else:
-        print("Section suitability unavailable: no usable pre-target circuit telemetry.")
+        print("Circuit suitability unavailable: insufficient geometry or matching historical weekends.")
+    # Legacy cached section evidence is intentionally ignored in normal runs.
+    section_profile, section_evidence = [], []
     print(
         f"Training on {len(frame)} driver-session examples "
         f"from {frame.event_round.nunique()} earlier weekends."
     )
-    print("Section pace: diagnostic only; excluded from model training and predictions.")
+    coverage = {
+        "training_rounds": sorted(int(r) for r in frame.event_round.unique()),
+        "requested_earlier_rounds": requested_rounds,
+        "current_sessions_with_lap_timing": [code for code, data in current.items() if data.get("lap_data_loaded", False)],
+        "classification_only_current_sessions": [code for code, data in current.items() if not data.get("lap_data_loaded", False)],
+    }
+    coverage["incomplete"] = (len(coverage["training_rounds"]) < len(requested_rounds)
+                              or bool(coverage["classification_only_current_sessions"]))
+    timing_sessions = ", ".join(coverage["current_sessions_with_lap_timing"]) or "none"
+    print(f"Training coverage: {len(coverage['training_rounds'])}/{len(requested_rounds)} earlier weekends; "
+          f"current sessions with lap timing: {timing_sessions}.")
+    if coverage["incomplete"]:
+        print("Incomplete data coverage: inspect run_info.json alongside these experimental rankings.")
+    print("Section pace: disabled; excluded from model training and predictions.")
     model, columns, sigma, tests = train_and_check(frame, target)
     scores = model.predict(inputs[columns])
     win, top3, average = simulate(scores, sigma, args.simulations)
     output = pd.DataFrame({"driver": names, "name": [d.get("name", d["driver"]) for d in drivers],
                            "team": [d["team"] for d in drivers], "first_pct": win,
                            "top3_pct": top3, "mean_simulated_position": average}).sort_values("first_pct", ascending=False)
-    stage = "_".join(current) if current else "pre_weekend"
     folder = OUTPUT_ROOT / f"{args.year}_{int(event['RoundNumber']):02d}_{args.session}" / "latest"
     folder.mkdir(parents=True, exist_ok=True)
     if target in {"Q", "SQ"}:
@@ -948,14 +981,44 @@ def run(args):
     inputs.assign(driver=names).to_csv(folder / "prediction_inputs.csv", index=False)
     pd.DataFrame(tests).to_csv(folder / "backtest.csv", index=False)
     model.save_model(folder / "model.json")
-    evidence_columns = ["driver", "family", "target_section", "kind", "target_share",
+    matches = []
+    for past in usable_events:
+        similarity, contributions = circuit_group_match(
+            tracks.get(event["Location"], {}), tracks.get(past["Location"], {}))
+        matches.append({"round": int(past["RoundNumber"]), "location": past["Location"],
+                        "similarity": similarity,
+                        "recency_factor": 0.85 ** (int(event["RoundNumber"]) - int(past["RoundNumber"])),
+                        "historical_weight": similarity * 0.85 ** (int(event["RoundNumber"]) - int(past["RoundNumber"])),
+                        **contributions})
+    pd.DataFrame(matches).to_csv(folder / "circuit_matches.csv", index=False)
+    evidence_columns = ["driver", "family", "target_section", "kind", "target_share", "condition",
                         "historical_round", "historical_session", "historical_location",
-                        "match_score", "source_factor", "weight", "gap_pct"]
+                        "match_score", "source_factor", "session_weight", "weekend_weight",
+                        "weight", "accepted", "gap_pct", "candidate_sections",
+                        "candidate_gap_min_pct", "candidate_gap_max_pct"]
     pd.DataFrame(section_evidence, columns=evidence_columns).to_csv(
         folder / "section_evidence.csv", index=False)
     pd.DataFrame(section_profile, columns=["start", "end", "kind", "seconds", "length",
                                           "speed", "share", "condition"]).to_csv(
         folder / "target_sections.csv", index=False)
+    # Preserve legacy CSV headers while section analysis stays disabled.
+    # Session timing coverage remains useful independently of section telemetry.
+    cohort_rows, rejection_rows, session_coverage = [], [], []
+    diagnostic_sessions = [(int(past["RoundNumber"]), past["Location"], all_data.get(int(past["RoundNumber"]), {}))
+                           for past in usable_events]
+    diagnostic_sessions.append((int(event["RoundNumber"]), event["Location"], current))
+    for rnd, location, sessions in diagnostic_sessions:
+        for code, data in sessions.items():
+            origin = {"year": args.year, "round": rnd, "location": location, "session": code}
+            session_coverage.append({**origin, "lap_data_loaded": data.get("lap_data_loaded", False),
+                                     "section_status": "disabled"})
+    cohort_columns = ["year", "round", "location", "session", "reference_driver", "reference_lap",
+                      "driver", "section", "kind", "start", "end", "compound", "fresh",
+                      "age_band", "phase", "condition", "peer_drivers", "drivers", "laps",
+                      "section_times", "driver_median_seconds", "cohort_median_seconds", "gap_pct"]
+    pd.DataFrame(cohort_rows, columns=cohort_columns).to_csv(folder / "section_cohorts.csv", index=False)
+    pd.DataFrame(rejection_rows, columns=["year", "round", "location", "session", "driver", "lap", "reason"]).to_csv(
+        folder / "section_rejections.csv", index=False)
     metadata = {"target": args.session, "event": event["EventName"], "as_of": now.isoformat(),
                 "used_sessions": list(current), "roster_source": roster_source,
                 "weather": "latest available session observations or manual scenario; no forecast API",
@@ -964,19 +1027,16 @@ def run(args):
                 "sigma_normalized_positions": sigma, "simulations": args.simulations,
                 "model_features": columns,
                 "section_pace_model_inputs": False,
-                "section_analysis": {
-                    "reference_session": section_source,
-                    "minimum_overall_coverage": 0.70,
-                    "minimum_historical_weekends": 2,
-                    "maximum_speed_difference_kmh": 40,
-                    "minimum_section_length_m": 30,
-                    "minimum_section_duration_s": 0.3,
-                    "section_length_ratio_range": [0.5, 2.0],
-                    "documented_group_factor": 1.0,
-                    "undocumented_group_factor": 0.75,
-                    "recency_per_round": 0.85,
-                    "limits": "Approximate marker windows and reference-lap speed bands; no fuel, traffic, gradient, banking or battery correction. Thresholds not calibrated."
-                },
+                "circuit_category_weights": GROUP_WEIGHTS,
+                "circuit_category_method": "weighted tag overlap; one result average per weekend; minimum two matching weekends; recency 0.85 per round",
+                "offline": args.offline,
+                "summary_schema": SUMMARY_SCHEMA,
+                "unavailable_sessions": store.unavailable,
+                "session_data_coverage": session_coverage,
+                "data_coverage": coverage,
+                "section_analysis": {"enabled": False,
+                    "physical_alignment_validated": False,
+                    "status": "disabled; legacy diagnostic evidence ignored"},
                 "tracks": tracks, "upgrades": "not separately measured or modelled",
                 "historical_data": "current published revisions, not archived as-of snapshots"}
     (folder / "run_info.json").write_text(json.dumps(json_safe(metadata), indent=2), encoding="utf-8")
@@ -997,11 +1057,14 @@ def main():
     parser.add_argument("--roster", type=Path, help="Optional verified driver,team,name CSV")
     parser.add_argument("--grid", type=Path, help="Optional full driver,grid CSV after qualifying, for grid penalties")
     parser.add_argument("--refresh", action="store_true", help="Refresh FastF1 and local summary caches")
+    parser.add_argument("--offline", action="store_true", help="Use cached FastF1 data only; do not make network requests")
     parser.add_argument("--as-of", help="Historical replay cutoff, e.g. 2026-09-25T06:00:00Z")
     parser.add_argument("--simulations", type=int, default=25_000)
     parser.add_argument("--air-temp", type=float, help="Optional manual weather scenario in Celsius")
     parser.add_argument("--wet", type=int, choices=[0, 1], help="Optional manual dry/wet scenario")
     args = parser.parse_args()
+    if args.offline and args.refresh:
+        parser.error("--offline cannot be combined with --refresh.")
     if not args.list_races and not args.race:
         parser.error("Supply --race Singapore or --list-races.")
     if not 100 <= args.simulations <= 1_000_000:
