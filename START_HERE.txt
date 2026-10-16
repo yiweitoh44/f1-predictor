@@ -62,6 +62,8 @@ ALL FLAGS
 --grid grid.csv      Complete driver,grid CSV for a Race/Sprint, after its
                      corresponding qualifying data has loaded.
 --refresh            Refresh FastF1 session caches and rebuild summaries.
+--offline            Use cached FastF1 data only; make no network requests.
+                     Cannot be combined with --refresh. Missing data stays missing.
 --as-of UTC_TIME     Past replay cutoff before the target's scheduled start.
                      Example format: 2026-10-11T11:59:00Z. Z means UTC.
 --simulations 25000  Sampled rankings. Default: 25000; range: 100 to 1000000.
@@ -78,6 +80,8 @@ Apply a manually verified grid after qualifying:
 For an already-started target, confirm the automatic pre-session replay prompt or supply a suitable --as-of cutoff.
 Flags can be combined. Supplied relative paths use the terminal folder;
 quote paths containing spaces. The default tracks.csv uses the script folder.
+For a cached replay during network failures, add --offline to the command.
+The season schedule must also be cached. This does not download missing data.
 
 ROSTER AND GRID
 Without --roster, use the latest loaded current-weekend roster, or the most
@@ -100,7 +104,8 @@ Recognised numeric columns:
 basis is an explanatory note; the model does not use it.
 Similar-track form requires at least two matching, nonmissing geometry/type
 columns on the target and historical circuits. grid_stickiness does not count.
-The existing CSV works but does not enable similar-track form by itself.
+The current CSV enables manual category matching below; the separate numeric
+geometry comparison needs these additional numeric fields.
 Leave unknown values blank. Match the circuit layout used for the event.
 Unsupported columns are ignored; adding them does not add model features.
 
@@ -112,6 +117,58 @@ overridden. Manual scenarios may or may not change the model output.
 PACE AND TYRE ANALYSIS
 Pace calculations exclude pit laps, inaccurate/deleted laps and laps without
 an all-clear track status. Classified finishing positions remain available.
+
+CIRCUIT PROFILES: MANUAL CATEGORIES
+Keep circuit_sections.py beside predict_anytime.py.
+Edit the five *_groups columns in tracks.csv. A | separates overlapping tags;
+for example a circuit can have both slow technical and fast flowing corners.
+All 26 listed circuits have at least one category, including the three added
+for 2024-2025 coverage. Madrid uses the published layout description; its tyre
+demand stays unknown. These are starting assumptions, not measured or official ratings.
+profile_basis explains this; existing source URLs support only the previously
+documented tags, not every added manual category. No tags are driver-specific.
+
+Category comparison weights are GROUP_WEIGHTS in circuit_sections.py:
+  Straights 25%, corners 30%, braking 15%, traction 15%, tyre demands 15%.
+For each category, compare shared tags divided by all distinct tags across
+both circuits, then multiply by its weight. Add the five contributions.
+Blank categories contribute zero. This score measures configured similarity,
+not confidence, accuracy or a driver's winning probability.
+
+Earlier results at matching circuits are averaged separately for each driver
+and their current team. Require at least two earlier matching weekends.
+A Sprint and GP share one weekend's average; teammates share the team's
+weekend average. The existing recency multiplier is 0.85 per elapsed round.
+These result averages are inputs to the existing prediction model. The
+25/30/15/15/15 weights do NOT assign circuit history a fixed share of the final
+prediction. Session/historical influence remains a separate task.
+
+circuit_matches.csv lists prior tracks, their category contributions, raw
+similarity and similarity times recency. run_info.json records the weights.
+Weather remains based on session observations/manual overrides; a track's
+usual climate is not substituted for the conditions on a particular weekend.
+
+SECTION PACE IS DISABLED
+Normal runs do not request car/position telemetry or calculate section pace.
+Old section evidence in cached summaries is ignored by the feature builder.
+All *_section_* columns remain excluded from every model fit. run_info.json
+records section_pace_model_inputs=false and section_analysis.enabled=false.
+The experimental helpers remain in circuit_sections.py for possible later
+validation. Their presence does not enable them. Legacy section CSV filenames
+are retained as empty exports for compatibility.
+
+Previous telemetry investigation: a user-supplied Hungary sample reproduced
+unrealistic section gaps. Positions were often stale, and comparisons between
+drivers were not physically validated. No measured prediction improvement or
+accuracy percentage has been established for this technique. Do not enable
+it simply because a result looks plausible.
+
+Summaries remain in F1Data/cache/anytime_v5_sections/<year>. Existing v4 and
+raw FastF1 caches are retained. No refresh is required for the category change:
+category weights and profiles are applied when features are built.
+If timing is unavailable, competitive classifications can be retained only
+once the existing conservative session-completion check passes. Missing lap
+data supplies no pace. run_info.json and the terminal report data coverage.
 
 Practice short-run comparisons:
 - Match compound, fresh/used status, tyre-age group and ten-minute window.
@@ -155,7 +212,7 @@ OUTPUTS AND CACHE
 On your Windows setup:
   C:\Users\Yi Wei Toh\F1Data\cache\fastf1
     Downloaded FastF1 data.
-  C:\Users\Yi Wei Toh\F1Data\cache\anytime_v3_pace\<year>
+  C:\Users\Yi Wei Toh\F1Data\cache\anytime_v5_sections\<year>
     Compact completed-session summaries.
   C:\Users\Yi Wei Toh\F1Data\outputs\<year>_<round>_<session>\latest
     Latest outputs for that event and target session.
@@ -172,6 +229,9 @@ Saved files:
   backtest.csv           Historical picks and actual first-place drivers.
   model.json             Newly trained XGBoost model.
   run_info.json          Cutoff, loaded sessions and assumptions.
+  circuit_matches.csv   Manual track similarities and category contributions.
+  target_sections.csv, section_evidence.csv, section_cohorts.csv,
+  section_rejections.csv  Empty legacy diagnostic exports; section pace disabled.
 
 Current displayed columns:
   Qualifying/SQ: pole_pct.
@@ -223,3 +283,29 @@ Those projects credit Mariana Antaya:
 FastF1:
   https://docs.fastf1.dev/
 Attribution does not itself establish permission to redistribute copied code.
+
+CATEGORY-VERSION VALIDATION
+The authoritative test file is kept outside Git, as requested:
+  python ../test_circuit_profiles_final.py .
+76 checks pass, including disabled section use, weighted category overlap,
+weekend weighting, current-team history and the saved native model. Three
+previous diagnostic expectations now verify that normal runs leave diagnostics
+empty; the original uploaded test text is preserved outside the checkout.
+
+A controlled Singapore pre-race replay used the user's 62 cached summaries:
+462 training examples from 16 earlier weekends; current FP1, SQ, S and Q;
+25,000 simulations. The same four earlier races were tested in both versions.
+Before: 2/4 correct winners. After: 2/4. This does not demonstrate improved
+predictive accuracy. Hadjar was seventh before and eighth after: the earlier
+Hadjar-first cloud output used incomplete data and is not a valid comparison
+for judging the circuit-category change. All section inputs stayed excluded.
+Only non-section summary values were imported; no section data was validated
+by that import. Completing Madrid later changed the ranking; see the check below.
+
+2024-2026 CATEGORY CHECK
+See CIRCUIT_VALIDATION.md for sources, method, driver examples and findings.
+A check of published qualifying/GP results did not show a benefit from
+preferring matching categories over recent form alone. No category weights
+were changed in response. This check is separate from the full prediction
+model and does not establish its accuracy. Completing Madrid's profile alters
+the latest Singapore ranking; the four-race winner check remains 2/4.
