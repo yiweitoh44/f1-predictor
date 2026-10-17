@@ -3,7 +3,8 @@ Run: python predict_anytime.py --race Singapore --session race
 Requires the existing requirements.txt. No OpenAI API or LLM is used.
 Uses a new training pipeline; it does not reproduce the original GitHub model.
 
-SETUP: Put this file beside your existing tracks.csv and requirements.txt.
+SETUP: Keep session_influence.py, circuit_sections.py, tracks.csv and
+requirements.txt beside this file. See START_HERE.txt and SESSION_INFLUENCE.md.
 Select --session race, qualifying, sprint or sprint-qualifying. Rerun the same
 command after another session's data becomes available. This predicts an
 unstarted session, not an in-progress race. At least four usable earlier
@@ -11,12 +12,14 @@ weekends in the selected season are required. Missing sessions are reported
 and omitted; missing driver values are not filled with invented positions.
 
 TRAINING: Qualifying and Sprint Qualifying share one family; Race and Sprint
-share another. A Sprint indicator distinguishes formats. Each rerun trains
+share another. Explicit source weights distinguish formats. Each rerun trains
 with the current availability mask: preweekend predictions use earlier form
 alone, while later runs can use practice/qualifying already completed. Old
 weekends are tested chronologically, with no future labels used for features.
 Pooling Sprint and normal sessions is a practical small-data assumption, not
-evidence they are identical. Backtests are small and probabilities uncalibrated.
+evidence they are identical. Recent form covers four previous weekends. The
+score combines 85% explicit session/history evidence with a 15% monotonic
+native XGBoost adjustment. Backtests are small and probabilities uncalibrated.
 
 TRACKS: Optional numeric geometry descriptors remain supported. tracks.csv also
 supports manual overlapping straight/corner/braking/traction/tyre groups
@@ -27,8 +30,9 @@ starting assumptions. Section telemetry is not downloaded or calculated in
 normal runs and all section-pace columns remain excluded from model fitting.
 
 WEATHER/UPGRADES: Observed weather comes from completed sessions, not forecasts.
---air-temp and --wet are manual scenario overrides. There is no upgrade-news
-feed or quantified upgrade effect. Later measured team pace is the proxy.
+--air-temp and --wet record observations/scenarios only; weather is not an
+active model input in this version. There is no upgrade-news feed or quantified
+upgrade effect. Recent team results can reflect changes without identifying them.
 
 ROSTER/GRID: Before running this weekend, the last known competitive roster is
 assumed unchanged. FP reserve-driver substitutions also need checking. Supply
@@ -38,16 +42,17 @@ account for penalties. Pit-lane starters can only be approximated at the back.
 
 OUTPUTS: ~/F1Data/outputs/year_round_session/latest holds predictions, training,
 prediction_inputs, backtest CSVs, model.json, run_info.json and section diagnostic
-CSVs. Rerunning the same event/session replaces its latest files. Raw caches
+CSVs. model.json stores the learned component; influence_policy.json records
+the blend. Rerunning the same event/session replaces its latest files. Raw caches
 are retained. --refresh explicitly renews data; --offline uses cached data only.
+--rebuild-summaries recalculates summaries using ordinary raw cache reuse.
 --as-of allows historical replay, but uses today's published historical
 revisions, not original archived data snapshots.
 
-VALIDATION: Regression tests, native XGBoost fitting and cached-data replays
-passed. An archived Hungary sample reproduced the extreme section gaps; stale
-position traces are now rejected. Driver-to-driver section alignment remains
-unvalidated. Live timing downloads remain blocked in the cloud environment.
-Section pace is disabled, excluded from model training and predictions. No prediction-accuracy improvement is claimed.
+VALIDATION: See SESSION_INFLUENCE.md for chronological comparisons, regression
+checks and the Sprint Qualifying limitation. Cached replays do not validate
+fresh timing downloads or the raw-lap cause of extreme legacy practice gaps.
+Section pace remains disabled and excluded from training and predictions.
 """
 from __future__ import annotations
 import argparse
@@ -57,6 +62,7 @@ import re
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import session_influence as influence
 from circuit_sections import (GROUP_COLUMNS, GROUP_WEIGHTS, circuit_group_match,
                               historical_section_features)
 
@@ -196,6 +202,11 @@ def tyre_pace_summary(laps, code):
     if data.empty:
         return {}
 
+    personal_best = data.groupby(["Driver", "Compound"], observed=True).lap_seconds.transform("min")
+    data = data[data.lap_seconds <= personal_best * influence.PACE_MAX_LAP_SPREAD].copy()
+    if data.empty:
+        return {}
+
     data["age_band"] = ((data.TyreLife - 1) // 3).astype(int)
 
     # Practice: ten-minute windows. Race/Sprint: five-lap windows.
@@ -220,7 +231,8 @@ def tyre_pace_summary(laps, code):
         groups = best.groupby(keys, observed=True).pace
         best["peers"] = groups.transform("size")
         best["reference"] = groups.transform("min")
-        best = best[best.peers >= 2].copy()
+        best["spread"] = groups.transform("max") / best.reference
+        best = best[(best.peers >= 2) & (best.spread <= influence.PACE_MAX_LAP_SPREAD)].copy()
         best["gap"] = 100 * (best.pace / best.reference - 1)
 
         for (driver, compound), group in best.groupby(
@@ -230,6 +242,7 @@ def tyre_pace_summary(laps, code):
             row[f"{label}_{compound.lower()}_gap_pct"] = float(
                 group.gap.median()
             )
+            row[f"{label}_{compound.lower()}_matched_laps"] = int(group.samples.sum())
             row[label + "_matched_laps"] = (
                 row.get(label + "_matched_laps", 0)
                 + int(group.samples.sum())
@@ -454,6 +467,7 @@ def summarize(session, code):
     section_analysis = {k: v for k, v in section_analysis.items() if k != "drivers"}
     return {"code": code, "drivers": drivers, "weather": observed,
             "lap_data_loaded": lap_data_loaded,
+            "pace_summary_version": 2,
             "section_analysis": section_analysis}
 
 
@@ -483,8 +497,9 @@ def completed_session_time(session, start, cutoff):
 
 
 class Store:
-    def __init__(self, year, now, refresh=False, offline=False):
+    def __init__(self, year, now, refresh=False, offline=False, rebuild_summaries=False):
         self.year, self.now, self.refresh, self.offline = year, now, refresh, offline
+        self.rebuild_summaries = rebuild_summaries
         self.folder = CACHE_ROOT / f"anytime_v{SUMMARY_SCHEMA}_sections" / str(year)
         self.memory = {}
         self.unavailable = []
@@ -499,13 +514,16 @@ class Store:
         if start is None or pd.isna(start) or start >= self.now:
             return None
         path = self.folder / f"{rnd:02d}_{code}.json"
+        saved_data = None
         if path.exists() and not self.refresh:
             saved = json.loads(path.read_text(encoding="utf-8"))
             if saved.get("schema") == SUMMARY_SCHEMA and saved.get("event") == event["EventName"]:
                 end = pd.to_datetime(saved.get("completed_utc"), utc=True, errors="coerce")
                 if pd.notna(end) and end < self.now:
-                    self.memory[key] = saved["data"]
-                    return saved["data"]
+                    saved_data = saved["data"]
+                    if not self.refresh and not self.rebuild_summaries:
+                        self.memory[key] = saved_data
+                        return saved_data
         import fastf1
         try:
             # Reuse raw data normally; replay clocks must not force downloads.
@@ -523,11 +541,17 @@ class Store:
                 return None
             data = summarize(session, code)
             if not data["lap_data_loaded"]:
+                if self.rebuild_summaries and saved_data and saved_data.get('lap_data_loaded'):
+                    raise ValueError('raw timing unavailable for summary rebuild; retain previous completed summary')
                 print(f"  R{rnd} {code}: classifications only; lap timing/pace unavailable.")
         except Exception as exc:
             print(f"  R{rnd} {code} unavailable: {type(exc).__name__}: {str(exc)[:130]}")
             self.unavailable.append({"round": rnd, "session": code,
                                      "reason": type(exc).__name__ + ": " + str(exc)})
+            if self.rebuild_summaries and saved_data is not None and not self.refresh:
+                print(f"  R{rnd} {code}: retained prior completed summary; pace was not rebuilt.")
+                self.memory[key] = saved_data
+                return saved_data
             self.memory[key] = None
             return None
         self.folder.mkdir(parents=True, exist_ok=True)
@@ -559,19 +583,10 @@ def features(driver, target_code, event, history, inputs, tracks):
     for label, family in (("qualifying", {"Q", "SQ"}), ("race", RACE_TYPES)):
         records = [r for r in history if r["session"] in family]
         individual = [r for r in records if r["driver"] == code]
-        team_records = [r for r in records if r["team"] == team]
-        row[label + "_driver_form"] = mean_recent([r["position_norm"] for r in individual]) 
-        team_sessions = {}
-        for record in team_records:
-            key = (record["round"], record["session"])
-            team_sessions.setdefault(key, []).append(
-                record["position_norm"]
-            )
-
-        row[label + "_team_form"] = mean_recent([
-            float(np.mean(positions))
-            for positions in team_sessions.values()
-        ])
+        row[label + "_driver_form"], row[label + "_history_weekends"] = influence.historical_form(
+            records, int(event["RoundNumber"]), driver=code)
+        row[label + "_team_form"], row[label + "_team_history_weekends"] = influence.historical_form(
+            records, int(event["RoundNumber"]), team=team)
         values = [number(r["position_norm"]) for r in individual[-8:]]
         row[label + "_consistency"] = float(np.std(values)) if len(values) >= 2 else np.nan
         weights, performances = [], []
@@ -638,10 +653,30 @@ def features(driver, target_code, event, history, inputs, tracks):
                     row[key] = number(weather[field])
     for label in ("qualifying", "race"):
         extra, _ = historical_section_features(
-            code, label, int(event["RoundNumber"]), history, {},
+            code, label, int(event["RoundNumber"]),
+            [r for r in history if int(r["round"]) >= int(event["RoundNumber"]) - influence.HISTORY_WEEKENDS], {},
             tracks, event["Location"], team=team
         )
         row.update(extra)
+    practices = []
+    for order, session_code in enumerate(("FP1", "FP2", "FP3"), 1):
+        data = inputs.get(session_code)
+        if data:
+            score = influence.pace_score(code, data, ("long", "short") if target_code in RACE_TYPES else ("short",))
+            practices.append((score, order))
+    row["practice_evidence_score"] = influence.weighted_available(practices)
+    sprint = inputs.get("S")
+    row["sprint_evidence_score"] = np.nan
+    if sprint:
+        participant = next((d for d in sprint["drivers"] if d['driver'] == code), {})
+        # An early retirement cannot establish race pace from finishing position.
+        # Its observed longer-run pace can still be used when comparable.
+        position = number(participant.get('position_norm'))
+        if number(participant.get('finished')) == 0 or number(participant.get('laps_completed_fraction')) < .75:
+            position = np.nan
+        row["sprint_evidence_score"] = influence.weighted_available([
+            (position, .8), (influence.pace_score(code, sprint, ('long',)), .2)])
+    row.update(influence.add_influence(row, target_code))
     return row
 
 
@@ -674,6 +709,7 @@ def training_rows(events, all_data, family, mask, tracks):
                 grid = number(driver.get("grid"))
                 if code in RACE_TYPES and ("Q" if code == "R" else "SQ") in inputs and grid > 0:
                     row["start_grid_norm"] = (grid - 1) / max(1, len(label["drivers"]) - 1)
+                    row.update(influence.add_influence(row, code))
                 rows.append({**row, "label": y, "event_round": rnd,
                              "target_session": code, "driver": driver["driver"]})
         for code, _ in session_schedule(event):
@@ -683,10 +719,12 @@ def training_rows(events, all_data, family, mask, tracks):
 
 def fit(frame, columns):
     import xgboost as xgb
+    learned_share = influence.LEARNED_SHARE
 
-    weights = 0.95 ** (
-        frame.event_round.max() - frame.event_round.to_numpy()
-    )
+    weights = 2. ** (-(frame.event_round.max() - frame.event_round.to_numpy()) / 6.)
+    # A Sprint weekend must not get twice the total training weight.
+    weekend_counts = frame.groupby("event_round").label.transform("size").to_numpy()
+    weights = weights / weekend_counts * np.median(weekend_counts)
 
     training = xgb.DMatrix(
         frame[columns].to_numpy(dtype=np.float32),
@@ -698,7 +736,8 @@ def fit(frame, columns):
     booster = xgb.train(
         {
             "objective": "reg:squarederror",
-            "max_depth": 3,
+            "max_depth": 2,
+            "monotone_constraints": tuple(1 for _ in columns),
             "eta": 0.04,
             "subsample": 0.85,
             "colsample_bytree": 0.85,
@@ -717,7 +756,9 @@ def fit(frame, columns):
                 data[columns].to_numpy(dtype=np.float32),
                 feature_names=columns,
             )
-            return booster.predict(inputs)
+            learned = np.clip(booster.predict(inputs), 0., 1.)
+            return ((1 - learned_share) * data["influence_anchor"].to_numpy()
+                    + learned_share * learned)
 
         def save_model(self, path):
             booster.save_model(str(path))
@@ -726,12 +767,9 @@ def fit(frame, columns):
 
 
 def train_and_check(frame, target_code):
-    excluded = {"label", "event_round", "target_session", "driver"}
-    # Section timings remain inspectable, but are not validated model inputs.
-    columns = [
-        c for c in frame.columns
-        if c not in excluded and "_section_" not in c
-    ]
+    # Only the interpretable evidence scores enter the learned adjustment.
+    # Raw pace, consistency, counts, weather and section fields remain diagnostics.
+    columns = list(influence.MODEL_COLUMNS)
     rounds = sorted(frame.event_round.unique())
     if len(rounds) < 4:
         raise ValueError("Need usable history from at least four earlier weekends in this season.")
@@ -764,16 +802,26 @@ def train_and_check(frame, target_code):
             guess = predicted[loc]
             errors.extend([{"session": session_code, "error": float(e)}
                            for e in group.label.to_numpy() - guess])
-            picked = group.iloc[int(np.argmin(guess))].driver
             actual = group.loc[group.label.idxmin(), "driver"]
+            ranks = pd.Series(guess).rank(method="average").to_numpy()
+            # Compare ranks among drivers with valid classifications. Labels
+            # retain the original roster denominator when some results are missing.
+            actual_ranks = group.label.rank(method="average").to_numpy()
+            order = np.lexsort((group.driver.to_numpy(), guess))
+            actual_order = np.argsort(group.label.to_numpy())
+            picked = group.driver.iloc[order[0]]
             details.append({"round": int(rnd), "session": session_code,
-                            "pick": picked, "actual": actual, "correct": picked == actual})
+                            "pick": picked, "actual": actual, "correct": picked == actual,
+                            "mean_rank_error": float(np.mean(np.abs(ranks-actual_ranks))),
+                            "top3_hits": len(set(group.driver.iloc[order[:3]]) & set(group.driver.iloc[actual_order[:3]]))})
     exact = [r["error"] for r in errors if r["session"] == target_code]
     residuals = exact if len(exact) >= 20 else [r["error"] for r in errors]
     if len(residuals) < 2:
         raise ValueError("Insufficient earlier test errors to estimate uncertainty.")
     print(f"Backtest: {sum(d['correct'] for d in details)}/{len(details)} first-place picks; "
           f"{sum(d['session'] == target_code for d in details)} tests of the requested session type.")
+    print(f"Backtest ranking: mean position error {np.mean([d['mean_rank_error'] for d in details]):.2f}; "
+          f"top-three drivers found {sum(d['top3_hits'] for d in details)}/{3*len(details)}.")
     if len(exact) < 20:
         print("Uncertainty uses pooled session-family errors; requested-session evidence is sparse.")
     sigma = max(float(np.std(residuals, ddof=1)), 0.03)
@@ -836,7 +884,8 @@ def run(args):
         now = target_start - pd.Timedelta(seconds=1)
         print(f"Pre-session replay cutoff: {now.isoformat()}")
     tracks = read_tracks(args.tracks)
-    store = Store(args.year, now, args.refresh, args.offline)
+    store = Store(args.year, now, args.refresh, args.offline,
+                  getattr(args, "rebuild_summaries", False))
     print(f"Target: {args.year} {event['EventName']} / {args.session}. Cutoff: {now.isoformat()}")
     current = {}
     for code in allowed:
@@ -859,6 +908,9 @@ def run(args):
                 f"short {short}/{len(data['drivers'])}; "
                 f"long {long}/{len(data['drivers'])} drivers"
             )
+            labels = ('long',) if code == 'S' else (('long', 'short') if target in RACE_TYPES else ('short',))
+            usable = sum(np.isfinite(influence.pace_score(d['driver'], data, labels)) for d in data['drivers'])
+            print(f"  {code} usable pace evidence after quality/support checks: {usable}/{len(data['drivers'])} drivers")
     previous = schedule[schedule.RoundNumber < int(event["RoundNumber"])].to_dict("records")
     all_data, usable_events, requested_rounds = {}, [], []
     for past in previous:
@@ -932,7 +984,7 @@ def run(args):
         if value is not None:
             inputs[field] = value
     if args.air_temp is not None or args.wet is not None:
-        print("Weather override is your scenario, not an automatically fetched forecast.")
+        print("Weather scenario recorded for diagnostics; it does not change this version's prediction.")
     target_track = tracks.get(event["Location"], {})
     if not (any(np.isfinite(number(target_track.get(k))) for k in TRACK_SCALES)
             or any(target_track.get(k) for k in GROUP_COLUMNS)):
@@ -960,6 +1012,8 @@ def run(args):
     if coverage["incomplete"]:
         print("Incomplete data coverage: inspect run_info.json alongside these experimental rankings.")
     print("Section pace: disabled; excluded from model training and predictions.")
+    inputs = inputs.assign(**pd.DataFrame([
+        influence.add_influence(row, target) for row in inputs.to_dict('records')]))
     model, columns, sigma, tests = train_and_check(frame, target)
     scores = model.predict(inputs[columns])
     win, top3, average = simulate(scores, sigma, args.simulations)
@@ -981,14 +1035,31 @@ def run(args):
     inputs.assign(driver=names).to_csv(folder / "prediction_inputs.csv", index=False)
     pd.DataFrame(tests).to_csv(folder / "backtest.csv", index=False)
     model.save_model(folder / "model.json")
+    (folder / "influence_policy.json").write_text(json.dumps(influence.policy(), indent=2), encoding="utf-8")
+    inputs[[c for c in inputs if c.startswith('influence_')]].assign(driver=names).to_csv(
+        folder / "session_influence.csv", index=False)
+    pace_rejections = []
+    for session_code, data in current.items():
+        for participant in data['drivers']:
+            for key, value in participant.items():
+                if key.startswith(('short_', 'long_')) and key.endswith('_gap_pct'):
+                    reason = influence.pace_reason(value)
+                    if reason and reason != 'missing':
+                        pace_rejections.append(dict(session=session_code, driver=participant['driver'], feature=key,
+                                                    value=value, reason=reason))
+    pd.DataFrame(pace_rejections, columns=['session','driver','feature','value','reason']).to_csv(
+        folder / "pace_rejections.csv", index=False)
     matches = []
     for past in usable_events:
         similarity, contributions = circuit_group_match(
             tracks.get(event["Location"], {}), tracks.get(past["Location"], {}))
+        distance = int(event["RoundNumber"]) - int(past["RoundNumber"])
+        in_window = 0 < distance <= influence.HISTORY_WEEKENDS
         matches.append({"round": int(past["RoundNumber"]), "location": past["Location"],
                         "similarity": similarity,
-                        "recency_factor": 0.85 ** (int(event["RoundNumber"]) - int(past["RoundNumber"])),
-                        "historical_weight": similarity * 0.85 ** (int(event["RoundNumber"]) - int(past["RoundNumber"])),
+                        "recency_factor": 0.85 ** distance,
+                        "within_history_window": in_window,
+                        "historical_weight": similarity * 0.85 ** distance if in_window else 0.,
                         **contributions})
     pd.DataFrame(matches).to_csv(folder / "circuit_matches.csv", index=False)
     evidence_columns = ["driver", "family", "target_section", "kind", "target_share", "condition",
@@ -1011,7 +1082,8 @@ def run(args):
         for code, data in sessions.items():
             origin = {"year": args.year, "round": rnd, "location": location, "session": code}
             session_coverage.append({**origin, "lap_data_loaded": data.get("lap_data_loaded", False),
-                                     "section_status": "disabled"})
+                                     "section_status": "disabled",
+                                     "pace_summary_version": data.get("pace_summary_version", 1)})
     cohort_columns = ["year", "round", "location", "session", "reference_driver", "reference_lap",
                       "driver", "section", "kind", "start", "end", "compound", "fresh",
                       "age_band", "phase", "condition", "peer_drivers", "drivers", "laps",
@@ -1021,14 +1093,17 @@ def run(args):
         folder / "section_rejections.csv", index=False)
     metadata = {"target": args.session, "event": event["EventName"], "as_of": now.isoformat(),
                 "used_sessions": list(current), "roster_source": roster_source,
-                "weather": "latest available session observations or manual scenario; no forecast API",
+                "weather": "diagnostic observations/scenarios only; not an active model input; no forecast API",
                 "manual_weather": {"air_temp": args.air_temp, "wet": args.wet},
                 "grid_source": str(args.grid) if args.grid else "qualifying order when available",
                 "sigma_normalized_positions": sigma, "simulations": args.simulations,
                 "model_features": columns,
                 "section_pace_model_inputs": False,
+                "session_influence": influence.policy(),
+                "prediction_formula": "(1-learned_share)*influence_anchor + learned_share*clip(native_model_prediction,0,1)",
                 "circuit_category_weights": GROUP_WEIGHTS,
                 "circuit_category_method": "weighted tag overlap; one result average per weekend; minimum two matching weekends; recency 0.85 per round",
+                "circuit_history_window_rounds": influence.HISTORY_WEEKENDS,
                 "offline": args.offline,
                 "summary_schema": SUMMARY_SCHEMA,
                 "unavailable_sessions": store.unavailable,
@@ -1057,11 +1132,13 @@ def main():
     parser.add_argument("--roster", type=Path, help="Optional verified driver,team,name CSV")
     parser.add_argument("--grid", type=Path, help="Optional full driver,grid CSV after qualifying, for grid penalties")
     parser.add_argument("--refresh", action="store_true", help="Refresh FastF1 and local summary caches")
+    parser.add_argument("--rebuild-summaries", action="store_true",
+                        help="Recalculate compact summaries, reusing raw FastF1 caches; combine with --offline to forbid downloads")
     parser.add_argument("--offline", action="store_true", help="Use cached FastF1 data only; do not make network requests")
     parser.add_argument("--as-of", help="Historical replay cutoff, e.g. 2026-09-25T06:00:00Z")
     parser.add_argument("--simulations", type=int, default=25_000)
-    parser.add_argument("--air-temp", type=float, help="Optional manual weather scenario in Celsius")
-    parser.add_argument("--wet", type=int, choices=[0, 1], help="Optional manual dry/wet scenario")
+    parser.add_argument("--air-temp", type=float, help="Record temperature scenario in Celsius; diagnostic only, no score effect")
+    parser.add_argument("--wet", type=int, choices=[0, 1], help="Record dry/wet scenario; diagnostic only, no score effect")
     args = parser.parse_args()
     if args.offline and args.refresh:
         parser.error("--offline cannot be combined with --refresh.")

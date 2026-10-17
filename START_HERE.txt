@@ -2,7 +2,8 @@ F1 PREDICTOR: SETUP AND USE
 Current baseline for predict_anytime.py
 
 SETUP
-Keep predict_anytime.py, tracks.csv and requirements.txt together.
+Keep predict_anytime.py, session_influence.py, circuit_sections.py, tracks.csv
+and requirements.txt together. SESSION_INFLUENCE.md explains the scoring policy.
 Open the Git repository folder in VS Code and run commands there.
 For a new Python environment only:
   python -m pip install -r requirements.txt
@@ -62,18 +63,23 @@ ALL FLAGS
 --grid grid.csv      Complete driver,grid CSV for a Race/Sprint, after its
                      corresponding qualifying data has loaded.
 --refresh            Refresh FastF1 session caches and rebuild summaries.
+--rebuild-summaries  Recalculate summaries while reusing raw FastF1 caches.
+                     Add --offline to forbid downloads. If rebuilding fails,
+                     retain an existing valid completed summary and report it.
 --offline            Use cached FastF1 data only; make no network requests.
                      Cannot be combined with --refresh. Missing data stays missing.
 --as-of UTC_TIME     Past replay cutoff before the target's scheduled start.
                      Example format: 2026-10-11T11:59:00Z. Z means UTC.
 --simulations 25000  Sampled rankings. Default: 25000; range: 100 to 1000000.
---air-temp 30        Manual air-temperature scenario, degrees Celsius.
---wet 0              Manual weather scenario: 0 = dry; 1 = wet.
+--air-temp 30        Record air-temperature scenario, degrees Celsius.
+--wet 0              Record weather scenario: 0 = dry; 1 = wet.
+                     Both are diagnostic only in this version; neither changes
+                     the score. Active weather effects belong to weather-context.
 
 EXAMPLES
 Refresh corrected results, before the target starts:
   python predict_anytime.py --year 2026 --race Singapore --session race --refresh
-Try a hypothetical wet, 30 C race:
+Record a wet, 30 C scenario (does not change this version's prediction):
   python predict_anytime.py --year 2026 --race Singapore --session race --air-temp 30 --wet 1
 Apply a manually verified grid after qualifying:
   python predict_anytime.py --year 2026 --race Singapore --session race --grid grid.csv
@@ -112,7 +118,9 @@ Unsupported columns are ignored; adding them does not add model features.
 Weather comes from completed sessions: median air/track temperatures and
 whether rain was reported, using the latest available observations per field.
 There is no forecast API. With no observations, weather stays missing unless
-overridden. Manual scenarios may or may not change the model output.
+overridden. Weather and numeric geometry columns remain diagnostic fields;
+only the six evidence scores listed in SESSION_INFLUENCE.md enter the model.
+Manual weather scenarios do not change predictions in this version.
 
 PACE AND TYRE ANALYSIS
 Pace calculations exclude pit laps, inaccurate/deleted laps and laps without
@@ -139,12 +147,17 @@ Earlier results at matching circuits are averaged separately for each driver
 and their current team. Require at least two earlier matching weekends.
 A Sprint and GP share one weekend's average; teammates share the team's
 weekend average. The existing recency multiplier is 0.85 per elapsed round.
-These result averages are inputs to the existing prediction model. The
-25/30/15/15/15 weights do NOT assign circuit history a fixed share of the final
-prediction. Session/historical influence remains a separate task.
+Only the previous four rounds are eligible now. Related-driver circuit form
+has a 10% share within historical evidence when available; driver recent form
+has 65% and current-team form 25%, redistributing missing components.
+The 25/30/15/15/15 category weights still determine similarity, not final
+winning chances. Team-related circuit form is exported as a diagnostic.
 
 circuit_matches.csv lists prior tracks, their category contributions, raw
-similarity and similarity times recency. run_info.json records the weights.
+similarity and similarity times recency. historical_weight is zero outside
+the four-round window; within_history_window explains eligibility. A positive
+weight still requires two usable matching weekends for an individual driver.
+run_info.json records the weights and window.
 Weather remains based on session observations/manual overrides; a track's
 usual climate is not substituted for the conditions on a particular weekend.
 
@@ -166,6 +179,13 @@ it simply because a result looks plausible.
 Summaries remain in F1Data/cache/anytime_v5_sections/<year>. Existing v4 and
 raw FastF1 caches are retained. No refresh is required for the category change:
 category weights and profiles are applied when features are built.
+Legacy summaries remain usable with the new extreme-gap guard. To apply the
+new raw-lap filters once, with your laptop's existing raw cache, run:
+  python predict_anytime.py --year 2026 --race Singapore --session race --offline --rebuild-summaries
+For an already-started event, answer y to the usual replay question. This may
+take time because it rebuilds earlier summaries too. It does not force raw
+downloads or erase caches. Failed rebuilds retain prior valid summaries; check
+the messages and pace_summary_version in run_info.json (2 means rebuilt).
 If timing is unavailable, competitive classifications can be retained only
 once the existing conservative session-completion check passes. Missing lap
 data supplies no pace. run_info.json and the terminal report data coverage.
@@ -186,20 +206,31 @@ Longer-run comparisons:
 - Use median lap times, requiring at least two laps per driver and two
   drivers within each comparison group.
 
-Unmatched pace stays missing. No fixed soft/medium/hard time correction is
+Newly built summaries also omit laps more than 7% slower than that driver's
+fastest valid lap on the same compound, and omit comparison groups whose
+fastest/slowest driver paces differ by more than 7%. Removed laps break runs.
+Before scoring, gaps outside 0..5% are omitted, never clipped to 0 or 5.
+Each compound needs four eligible drivers with at least two matched samples.
+Legacy summaries only have aggregate sample counts; per-compound support
+cannot be established until rebuilt. These guards do not prove equal fuel or
+programmes. Unmatched pace stays missing. No fixed tyre-time correction is
 invented. These grouping thresholds are experimental assumptions.
 
 The net stint pace trend measures whether lap times increase or decrease.
 It does not isolate tyre deterioration from fuel burn or changing conditions.
 
-Sprint inputs include sustained pace, classified position, finishing gap,
-completion, grid-position gains and safety-car/red-flag disruption.
+Sprint evidence combines classified position (80%) and acceptable longer-run
+pace (20%), redistributing missing parts. A known non-finisher or driver below
+75% completed distance supplies no finishing-position pace evidence.
+Finishing gap, completion, grid gains and disruption are also exported; they
+are not separate model inputs.
 Finishing gap is expressed as a percentage of the winner's race duration;
 it is missing for retired/lapped drivers or unavailable timing.
 It is result context, not a direct measurement of underlying race pace.
 
 The model no longer uses raw practice/Sprint fastest-lap gaps as pace inputs.
-Qualifying and Sprint Qualifying retain their existing position/gap inputs.
+Qualifying order supplies the race grid. SQ order can inform later qualifying.
+Raw qualifying gaps remain diagnostic rather than separate model inputs.
 
 Matched-pace messages show how many drivers have usable comparisons.
 Sprint short coverage is intentionally zero; Sprint uses longer-run pace.
@@ -224,10 +255,13 @@ with a different input stage or cutoff. Other event/session folders remain.
 
 Saved files:
   predictions.csv        Prediction table.
-  prediction_inputs.csv  Features used for the target drivers.
+  prediction_inputs.csv  Target evidence scores plus raw diagnostic fields.
   training.csv           Earlier driver-session training examples.
-  backtest.csv           Historical picks and actual first-place drivers.
-  model.json             Newly trained XGBoost model.
+  backtest.csv           Picks, actual winners, ranking error and top-three hits.
+  model.json             Native XGBoost component (15% of final score).
+  influence_policy.json  Source weights, history window and blend settings.
+  session_influence.csv  Per-driver scores and effective source weights.
+  pace_rejections.csv    Current-session gaps omitted by the extreme-gap guard.
   run_info.json          Cutoff, loaded sessions and assumptions.
   circuit_matches.csv   Manual track similarities and category contributions.
   target_sections.csv, section_evidence.csv, section_cohorts.csv,
@@ -243,8 +277,10 @@ These are experimental simulation shares, not calibrated probabilities.
 
 HOW IT LEARNS AND CURRENT LIMITS
 Q and SQ share a training family; Race and Sprint share another.
-Driver/team form uses up to eight earlier family results, favouring newer ones.
-Team form averages teammates within each historical session before smoothing.
+Driver/team form uses the previous four rounds, with weight halved every three
+rounds. One weekend gets one historical budget: GP/Q has three times the vote
+of Sprint/SQ within it. Team form uses the driver's current team and averages
+teammates within each historical session before smoothing.
 Historical examples use session types available at the current input stage,
 subject to each historical weekend's session order and actual availability.
 Current-weekend results enter through session features, not historical form.
@@ -256,14 +292,19 @@ first-place picks. Driver score errors set the shared simulation noise.
 The final model trains on all usable earlier examples, then samples rankings.
 There is no lap-by-lap race simulation or additional retirement lottery.
 
-There are no explicit percentage weights prioritising particular sessions.
+The score is 85% explicit weighted evidence and 15% learned adjustment.
+Competition gets more influence than practice when available. Missing sources
+redistribute the weights; before current sessions exist, history supplies the
+evidence. See SESSION_INFLUENCE.md for all four policies. Worsening an evidence
+score cannot improve the learned prediction with other inputs fixed.
 No automatic target penalties, forecast or quantified upgrade effect exists.
-No built-in pole/grid-first benchmark or probability calibration exists.
+An external chronological comparison includes grid/history-only benchmarks;
+there is no probability calibration or built-in benchmark display yet.
 Four backtests alone do not establish reliable prediction accuracy.
 
 This is a new reusable pipeline adapted from earlier work, not an exact copy
-or a demonstrated accuracy improvement. Planned features are not implemented
-until they appear in the code.
+of the original scripts. The limited validation below does not establish
+general predictive accuracy. Planned features are not implemented until coded.
 
 Validation for the pace-and-tyres branch:
 - 19 offline calculation/integration tests passed locally and on Windows.
@@ -284,10 +325,17 @@ FastF1:
   https://docs.fastf1.dev/
 Attribution does not itself establish permission to redistribute copied code.
 
-CATEGORY-VERSION VALIDATION
+CURRENT SESSION-INFLUENCE VALIDATION
+See SESSION_INFLUENCE.md for the selected policy, held-out results and limits.
+91 checks pass in the authoritative external test file:
+  python ../test_circuit_profiles_final.py .
+All four session modes completed cached 22-driver Singapore replays.
+No section pace was used. Tests and raw data remain outside Git.
+
+PREVIOUS CATEGORY-VERSION VALIDATION (BEFORE SESSION INFLUENCE)
 The authoritative test file is kept outside Git, as requested:
   python ../test_circuit_profiles_final.py .
-76 checks pass, including disabled section use, weighted category overlap,
+At that checkpoint, 76 checks passed, including disabled section use, weighted category overlap,
 weekend weighting, current-team history and the saved native model. Three
 previous diagnostic expectations now verify that normal runs leave diagnostics
 empty; the original uploaded test text is preserved outside the checkout.
