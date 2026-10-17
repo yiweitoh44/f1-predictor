@@ -31,3 +31,9 @@ These improvements are planned and are not all implemented yet.
 ## Status
 
 This is an experimental learning project. Its simulation percentages are not validated real-world probabilities, and prediction accuracy is still being evaluated.
+
+See [START_HERE.txt](START_HERE.txt) for commands and cache handling, and
+[SESSION_INFLUENCE.md](SESSION_INFLUENCE.md) for the implemented session weights,
+historical windows, validation results and remaining limits. Manual circuit
+categories and tyre-aware pace comparisons are implemented; section telemetry
+remains disabled.
