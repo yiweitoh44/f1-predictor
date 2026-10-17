@@ -85,6 +85,15 @@ valid completed summaries and report that pace was not rebuilt. No cache is
 deleted. `pace_summary_version: 2` identifies summaries built with the filters.
 `--refresh` remains a separate explicit request to renew downloaded data.
 
+If a current v5 summary is absent or invalid, normal runs also check
+`anytime_v4_sections/<year>`. A matching event/session and a completion time
+between scheduled start and cutoff are required. Driver identities and
+normalised-position bounds are checked. Non-section observations are reused;
+legacy section evidence is discarded in memory, and source files are never
+rewritten. Stored lap counts can establish that the summary recorded timing,
+not that the raw cache is currently available. No download or manual folder
+renaming is needed for valid old summaries. `--refresh` bypasses both versions.
+
 ## Validation recorded on 17 October 2026
 
 The comparison used the user's cached 2026 summaries, the merged circuit
@@ -120,9 +129,12 @@ alone scored 1.45 and 0/2 poles, better ranking error than this selected policy.
 The policy was retained without retuning against the held-out outcomes. These
 small samples do not establish general accuracy, particularly for Sprint/SQ.
 
-The normal CLI still reports only its **latest four** eligible tests. The final
-Singapore GP replay reported **2/4 winners**, mean ranking error 3.50 and 8/12
-top-three slots. This is a different test set from the eight-event table.
+The normal CLI now reports its **latest eight** eligible tests, or fewer when
+not enough events exist. For the Singapore GP replay these are rounds 9–16:
+**5/8 winners**, mean ranking error 3.31 and 16/24 top-three slots. Simulation
+uncertainty still uses only the latest four eligible tests, preserving the
+previous prediction shares. Before this reporting expansion the CLI showed
+2/4 winners, mean ranking error 3.50 and 8/12 top-three slots.
 
 All four target modes completed offline 22-driver Singapore replays with
 25,000 sampled rankings. Saved models contain only six evidence columns and
@@ -131,11 +143,13 @@ reproduces the score. A real-data check changed only Antonelli's Sprint P4 to
 P20: his score worsened from 0.15155 to 0.20566 (lower is better). Changing only
 his grid to P20 also worsened it. No driver-specific correction was added.
 
-The authoritative external `test_circuit_profiles_final.py` passed **91 tests**,
+The authoritative external `test_circuit_profiles_final.py` passed **96 tests**,
 covering existing cutoff/grid/section rules plus history windows, weekend
 weighting, missing sources, practice guards, monotonic fitting, saved-model
 reproduction, grid overrides, missing-classification metrics, failed-rebuild
-cache retention and explicit refresh of corrupt summaries. Raw ZIPs,
+cache retention, legacy-cache identity/cutoff checks, read-only v4 reuse,
+explicit refresh of corrupt summaries, and eight-test reporting with unchanged
+four-test uncertainty. Raw ZIPs,
 caches, replay outputs, experiment records and the test file remain outside Git.
 The test file is therefore not supplied by a fresh clone of this repository.
 

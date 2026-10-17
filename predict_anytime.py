@@ -71,6 +71,8 @@ DATA_ROOT = Path.home() / "F1Data"
 CACHE_ROOT = DATA_ROOT / "cache"
 OUTPUT_ROOT = DATA_ROOT / "outputs"
 SUMMARY_SCHEMA = 5
+BACKTEST_WEEKENDS = 8
+UNCERTAINTY_WEEKENDS = 4
 SESSION_NAMES = {"Practice 1": "FP1", "Practice 2": "FP2", "Practice 3": "FP3",
                  "Sprint Qualifying": "SQ", "Sprint Shootout": "SQ",
                  "Sprint": "S", "Qualifying": "Q", "Race": "R"}
@@ -515,15 +517,39 @@ class Store:
             return None
         path = self.folder / f"{rnd:02d}_{code}.json"
         saved_data = None
-        if path.exists() and not self.refresh:
-            saved = json.loads(path.read_text(encoding="utf-8"))
-            if saved.get("schema") == SUMMARY_SCHEMA and saved.get("event") == event["EventName"]:
-                end = pd.to_datetime(saved.get("completed_utc"), utc=True, errors="coerce")
-                if pd.notna(end) and end < self.now:
-                    saved_data = saved["data"]
-                    if not self.refresh and not self.rebuild_summaries:
-                        self.memory[key] = saved_data
-                        return saved_data
+        if not self.refresh:
+            legacy = CACHE_ROOT / "anytime_v4_sections" / str(self.year) / path.name
+            for candidate, schema in ((path, SUMMARY_SCHEMA), (legacy, 4)):
+                if not candidate.exists():
+                    continue
+                try:
+                    saved = json.loads(candidate.read_text(encoding="utf-8"))
+                    end = pd.to_datetime(saved.get("completed_utc"), utc=True, errors="coerce")
+                    data = saved["data"]
+                    if (saved.get("schema") != schema or saved.get("event") != event["EventName"]
+                            or pd.isna(end) or not start <= end < self.now or data.get("code") != code):
+                        continue
+                    if schema == 4:
+                        drivers = data.get("drivers", [])
+                        names = [d.get("driver") for d in drivers]
+                        if (len(names) < 2 or not all(names) or len(set(names)) != len(names)
+                                or any(np.isfinite(number(d.get('position_norm')))
+                                       and not 0 <= number(d['position_norm']) <= 1 for d in drivers)):
+                            continue
+                        # Reuse non-section observations; never rewrite the old cache
+                        # or imply that its telemetry/raw laps were revalidated.
+                        data = {**data, "drivers": [{**d, "sections": []} for d in drivers],
+                                "section_analysis": {"enabled": False, "status": "disabled; legacy evidence omitted"},
+                                "lap_data_loaded": data.get("lap_data_loaded", any(number(d.get('laps')) > 0 for d in drivers)),
+                                "source_summary_schema": 4, "raw_cache_revalidated": False}
+                        print(f"  R{rnd} {code}: reusing legacy v4 summary; section evidence ignored.")
+                    saved_data = data
+                    break
+                except (ValueError, TypeError, KeyError, AttributeError) as exc:
+                    print(f"  R{rnd} {code}: ignoring invalid cached summary ({type(exc).__name__}).")
+            if saved_data is not None and not self.rebuild_summaries:
+                self.memory[key] = saved_data
+                return saved_data
         import fastf1
         try:
             # Reuse raw data normally; replay clocks must not force downloads.
@@ -779,7 +805,7 @@ def train_and_check(frame, target_code):
             (frame.event_round == rnd)
             & (frame.target_session == target_code)
         ).any()
-    ][-4:]
+    ][-BACKTEST_WEEKENDS:]
 
     if not test_rounds:
         raise ValueError(
@@ -800,7 +826,7 @@ def train_and_check(frame, target_code):
             loc = np.where(test.target_session.to_numpy() == session_code)[0]
             group = test.iloc[loc]
             guess = predicted[loc]
-            errors.extend([{"session": session_code, "error": float(e)}
+            errors.extend([{"session": session_code, "round": rnd, "error": float(e)}
                            for e in group.label.to_numpy() - guess])
             actual = group.loc[group.label.idxmin(), "driver"]
             ranks = pd.Series(guess).rank(method="average").to_numpy()
@@ -814,14 +840,18 @@ def train_and_check(frame, target_code):
                             "pick": picked, "actual": actual, "correct": picked == actual,
                             "mean_rank_error": float(np.mean(np.abs(ranks-actual_ranks))),
                             "top3_hits": len(set(group.driver.iloc[order[:3]]) & set(group.driver.iloc[actual_order[:3]]))})
-    exact = [r["error"] for r in errors if r["session"] == target_code]
-    residuals = exact if len(exact) >= 20 else [r["error"] for r in errors]
+    uncertainty_rounds = set(test_rounds[-UNCERTAINTY_WEEKENDS:])
+    recent_errors = [r for r in errors if r['round'] in uncertainty_rounds]
+    exact = [r["error"] for r in recent_errors if r["session"] == target_code]
+    residuals = exact if len(exact) >= 20 else [r["error"] for r in recent_errors]
     if len(residuals) < 2:
         raise ValueError("Insufficient earlier test errors to estimate uncertainty.")
     print(f"Backtest: {sum(d['correct'] for d in details)}/{len(details)} first-place picks; "
           f"{sum(d['session'] == target_code for d in details)} tests of the requested session type.")
     print(f"Backtest ranking: mean position error {np.mean([d['mean_rank_error'] for d in details]):.2f}; "
           f"top-three drivers found {sum(d['top3_hits'] for d in details)}/{3*len(details)}.")
+    print(f"Simulation uncertainty uses the latest {len(uncertainty_rounds)} eligible tests; "
+          f"the report shows up to {BACKTEST_WEEKENDS}.")
     if len(exact) < 20:
         print("Uncertainty uses pooled session-family errors; requested-session evidence is sparse.")
     sigma = max(float(np.std(residuals, ddof=1)), 0.03)
@@ -1097,6 +1127,8 @@ def run(args):
                 "manual_weather": {"air_temp": args.air_temp, "wet": args.wet},
                 "grid_source": str(args.grid) if args.grid else "qualifying order when available",
                 "sigma_normalized_positions": sigma, "simulations": args.simulations,
+                "backtest_maximum_weekends": BACKTEST_WEEKENDS,
+                "uncertainty_maximum_weekends": UNCERTAINTY_WEEKENDS,
                 "model_features": columns,
                 "section_pace_model_inputs": False,
                 "session_influence": influence.policy(),
