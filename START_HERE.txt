@@ -2,10 +2,10 @@ F1 PREDICTOR: SETUP AND USE
 Current baseline for predict_anytime.py
 
 SETUP
-Keep predict_anytime.py, session_influence.py, circuit_sections.py, tracks.csv
+Keep predict_anytime.py, session_influence.py, circuit_sections.py, grid_sources.py, tracks.csv
 and requirements.txt together. SESSION_INFLUENCE.md explains the scoring policy.
 Open the Git repository folder in VS Code and run commands there.
-For a new Python environment only:
+For a new environment, or after pulling the grid-sources update:
   python -m pip install -r requirements.txt
 Check installed-package dependencies:
   python -m pip check
@@ -61,7 +61,9 @@ ALL FLAGS
 --tracks tracks.csv  Circuit CSV; defaults to tracks.csv beside the script.
 --roster roster.csv  Driver/team entries: driver,team; name is optional.
 --grid grid.csv      Complete driver,grid CSV for a Race/Sprint, after its
-                     corresponding qualifying data has loaded.
+                     corresponding qualifying data has loaded. Use PIT for pit-lane starts.
+--grid-source auto   Prefer eligible published grids (default).
+                     Use qualifying to explicitly retain Q/SQ order.
 --refresh            Refresh FastF1 session caches and rebuild summaries.
 --rebuild-summaries  Recalculate summaries while reusing raw FastF1 caches.
                      Add --offline to forbid downloads. If rebuilding fails,
@@ -92,11 +94,15 @@ The season schedule must also be cached. This does not download missing data.
 ROSTER AND GRID
 Without --roster, use the latest loaded current-weekend roster, or the most
 recent earlier competitive roster. Check replacements and FP reserve drivers.
-Grid defaults to Q order for a GP and SQ order for a Sprint when available.
-Penalties are not automatically applied to the target grid.
-grid.csv must list every roster driver once, using abbreviations such as VER,
-and positions 1 through field size once. Pit-lane starters are approximated
-at the back; this is not an accurate pit-lane-start model.
+After qualifying, published grids are selected automatically: dated FIA grid
+first, then eligible Formula1.com/OpenF1 snapshots. Qualifying order is the
+fallback. The terminal identifies the source. See GRID_SOURCES.md for time
+checks, source conflicts and the limits of historical replay.
+Use --grid-source qualifying to explicitly keep the Q/SQ-order assumption.
+grid.csv must list every roster driver once, using abbreviations such as VER.
+Use a unique grid slot, or PIT for a pit-lane starter; vacant slots are allowed.
+Pit-lane starters are identified separately and share a back-of-field score;
+exit order, delay and detailed recovery are not modelled.
 
 TRACKS AND WEATHER
 tracks.csv is manual. location must match Location from --list-races exactly.
@@ -260,6 +266,8 @@ with a different input stage or cutoff. Other event/session folders remain.
 Saved files:
   predictions.csv        Prediction table.
   prediction_inputs.csv  Target evidence scores plus raw diagnostic fields.
+  starting_grid.csv      Qualifying position, selected grid and pit-lane status.
+  grid_sources.json      Source, publication/capture time, conflicts and fallbacks.
   training.csv           Earlier driver-session training examples.
   backtest.csv           Picks, actual winners, ranking error and top-three hits.
   model.json             Native XGBoost component (15% of final score).
@@ -303,7 +311,8 @@ Competition gets more influence than practice when available. Missing sources
 redistribute the weights; before current sessions exist, history supplies the
 evidence. See SESSION_INFLUENCE.md for all four policies. Worsening an evidence
 score cannot improve the learned prediction with other inputs fixed.
-No automatic target penalties, forecast or quantified upgrade effect exists.
+Published grids can include target penalties and pit-lane starts.
+No active weather forecast or quantified upgrade effect exists.
 An external chronological comparison includes grid/history-only benchmarks;
 there is no probability calibration or built-in benchmark display yet.
 Eight backtests alone do not establish reliable prediction accuracy.
@@ -333,7 +342,7 @@ Attribution does not itself establish permission to redistribute copied code.
 
 CURRENT SESSION-INFLUENCE VALIDATION
 See SESSION_INFLUENCE.md for the selected policy, held-out results and limits.
-96 checks pass in the authoritative external test file:
+At the session-influence checkpoint, 96 checks passed in the external test file:
   python ../test_circuit_profiles_final.py .
 All four session modes completed cached 22-driver Singapore replays.
 No section pace was used. Tests and raw data remain outside Git.
@@ -363,3 +372,12 @@ preferring matching categories over recent form alone. No category weights
 were changed in response. This check is separate from the full prediction
 model and does not establish its accuracy. Completing Madrid's profile alters
 the latest Singapore ranking; the four-race winner check remains 2/4.
+
+GRID-SOURCES VALIDATION
+118 checks pass in the authoritative external test file; all four modes ran.
+See GRID_SOURCES.md for the selected source policy and current limitations.
+Dated FIA documents covered all 17 GP and 6 Sprint grids through Singapore.
+Thirteen GP replays retained 8/13 winners and changed average places out from
+3.273 to 3.371, with podium-driver hits 24/39 to 25/39. This fixes grid inputs;
+it does not demonstrate overall predictive improvement. The stronger recovery
+experiment was not adopted. Historical/session weights remain unchanged.

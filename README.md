@@ -22,7 +22,6 @@ I used these scripts as the starting point for a reusable predictor and have bee
 
 - Better balance between current-weekend evidence and recent form
 - Tyre-aware practice and sprint pace comparisons
-- Published starting grids and penalty handling
 - Circuit similarity and weather inputs
 - More historical testing and clearer prediction outputs
 
@@ -37,3 +36,9 @@ See [START_HERE.txt](START_HERE.txt) for commands and cache handling, and
 historical windows, validation results and remaining limits. Manual circuit
 categories and tyre-aware pace comparisons are implemented; section telemetry
 remains disabled.
+
+Published grids are now selected from dated FIA documents, with F1/OpenF1 and
+qualifying-order fallbacks. Pit-lane starts are identified separately. See
+[GRID_SOURCES.md](GRID_SOURCES.md) for source timing, commands and validation.
+Correcting grid inputs did not improve overall ranking accuracy in the tested
+sample; recovery after penalties remains limited.

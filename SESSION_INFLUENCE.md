@@ -26,8 +26,9 @@ They are not percentages of winning probability.
 
 Before current sessions exist, history supplies the evidence component. On a
 normal weekend, qualifying with only history and practice uses 75%/25% within
-that component. Grid means Q order for a GP or SQ order for a Sprint, unless a
-complete verified `--grid` is supplied. Automatic penalties remain future work.
+that component. Grid uses the selected published starting grid when available, with Q/SQ
+order as fallback and a complete `--grid` CSV as an explicit override.
+See GRID_SOURCES.md for source preference, timing and pit-lane handling.
 
 Historical evidence combines driver form (65%), current-team form (25%) and
 driver form at related circuits (10%), redistributing absent components.
@@ -166,8 +167,9 @@ Missing source inputs use history in the learned component. Raw diagnostics in
 
 Weather fields and `--air-temp`/`--wet` currently record diagnostics only and
 do not change predictions. Weather transfer and forecasts belong to the
-weather-context branch. Grid penalties, pit-lane handling, richer output and
-probability calibration also remain separate work. Simulation percentages are
+weather-context branch. Published grids and explicit pit-lane flags are now
+handled by grid_sources.py; pit-exit delay and detailed recovery remain limited.
+Richer output and probability calibration remain separate work. Simulation percentages are
 uncalibrated sampled-ranking shares, not measured winning probabilities.
 
 A clean installation needs historical data downloaded from FastF1; a cache
