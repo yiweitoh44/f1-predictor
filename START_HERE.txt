@@ -2,14 +2,16 @@ F1 PREDICTOR: SETUP AND USE
 Current baseline for predict_anytime.py
 
 SETUP
-Keep predict_anytime.py, session_influence.py, circuit_sections.py, grid_sources.py, tracks.csv
-and requirements.txt together. This guide covers setup, scoring and validation.
+Keep predict_anytime.py, session_influence.py, circuit_sections.py, grid_sources.py,
+weather_context.py, tracks.csv and requirements.txt together.
+This guide covers setup, scoring and validation.
 Run only predict_anytime.py. The other Python files are imported helpers:
   session_influence.py  Session/history scores and qualifying/grid split.
   grid_sources.py       Published grids, source checks and pit-lane status.
   circuit_sections.py   Circuit categories and deferred section helpers.
+  weather_context.py    Forecasts, observed weather and FIA upgrade declarations.
 Open the Git repository folder in VS Code and run commands there.
-For a new environment, or after pulling the grid-sources update:
+For a new environment, or after pulling updates:
   python -m pip install -r requirements.txt
 Check installed-package dependencies:
   python -m pip check
@@ -80,7 +82,9 @@ ALL FLAGS
 --air-temp 30        Record air-temperature scenario, degrees Celsius.
 --wet 0              Record weather scenario: 0 = dry; 1 = wet.
                      Both are diagnostic only in this version; neither changes
-                     the score. Active weather effects belong to weather-context.
+                     the score. Scenarios do not overwrite recorded observations.
+--weather-source auto Fetch forecast/observation/upgrade context (default).
+--weather-source off  Skip these context downloads; scoring stays the same.
 
 EXAMPLES
 Refresh corrected results, before the target starts:
@@ -183,13 +187,61 @@ geometry comparison needs these additional numeric fields.
 Leave unknown values blank. Match the circuit layout used for the event.
 Unsupported columns are ignored; adding them does not add model features.
 
-Weather comes from completed sessions: median air/track temperatures and
-whether rain was reported, using the latest available observations per field.
-There is no forecast API. With no observations, weather stays missing unless
-overridden. Weather and numeric geometry columns remain diagnostic fields;
-only the evidence scores listed in HOW IT LEARNS below enter the model:
-six for Q/SQ, seven for Race/Sprint including separate qualifying performance.
-Manual weather scenarios do not change predictions in this version.
+latitude, longitude and weather_coordinate_source locate forecast requests.
+Every shipped circuit has coordinates, including Madrid. These are metadata,
+not model inputs. Sources: Jolpi circuit metadata for 2026 and 2025.
+
+WEATHER AND UPGRADE CONTEXT
+Three things are kept separate in weather_context.json:
+  Observations: completed earlier sessions, with FastF1 preferred per field.
+    OpenF1 fills missing air temperature, track temperature or rainfall fields
+    only for a uniquely matched session that ended before the cutoff.
+    Temperature is a session median; rain means some rain was recorded, not
+    that the entire session was wet. Historical records may be revised later.
+  Forecast: Open-Meteo hourly air temperature, precipitation and (when provided)
+    rain probability near the circuit. It is not a track-temperature forecast.
+    The highest hourly rain probability is NOT the probability of a wet race.
+  Scenario: --air-temp and --wet are user assumptions, not source observations.
+
+The assumed forecast window is two hours for Race, one hour for Q/SQ/Sprint,
+starting at the scheduled start. This does not know future delays or red flags.
+Precipitation covers the preceding hour; partially overlapping boundary hours
+are included. Every overlapping hour must exist. Null rain stays unknown.
+Descriptions: dry means zero forecast precipitation; rain means at least one
+hour reaches 0.2 mm; smaller nonzero values are uncertain. These are reporting
+thresholds, not validated wet-track/tyre-choice predictions.
+
+Live forecasts are captured before target start and kept as dated snapshots.
+An eligible captured snapshot is preferred during historical replay. Otherwise
+the replay requests a pinned NOAA GFS run from Open-Meteo's Single Runs API.
+Model initialization is NOT publication time. The fallback requires initialization
+plus a conservative 12 hours to precede the cutoff; actual release time remains
+unverified and is labelled as an assumption. No target's observed weather is
+substituted for a missing historical forecast. The GFS archive starts 2 April
+2026. Distant events outside the forecast horizon can have no usable forecast.
+Archived deterministic forecasts may have no rain probability; none is invented.
+Forecasts can miss local rain: the pre-event Sepang and Singapore Sprint runs
+used in this check forecast dry conditions despite rain in the later observations.
+
+FIA Car Presentation Submissions supply dated team declarations and source text.
+The later of website publication and document issue time must precede the cutoff.
+The text can describe performance, cooling, reliability or circuit-specific parts.
+None establishes a measured speed gain. No automatic team or driver bonus is
+awarded; existing recent team form already reflects results without proving causes.
+Missing declarations or unextractable text do not establish that no upgrade exists.
+
+Sources: https://open-meteo.com/ (weather data attribution, CC BY 4.0),
+https://open-meteo.com/en/docs/single-runs-api , https://openf1.org/ ,
+https://www.fia.com/documents . Forecasts are subject to provider availability
+and API limits. No new package or API key is required for these public endpoints.
+--offline forbids downloads, including these sources. Missing/failed context
+is reported in weather_context.json and does not prevent an otherwise valid
+prediction. --weather-source off skips forecast/observation/upgrade context.
+Raw responses and snapshots live under ~/F1Data/cache/weather, outside Git.
+No code points at an uploaded ZIP or a cloud-only cache path.
+
+These additions are context only. Weather and numeric geometry remain diagnostic;
+only the evidence scores below enter the model: six for Q/SQ, seven for Race/Sprint.
 
 PACE AND TYRE ANALYSIS
 Pace calculations exclude pit laps, inaccurate/deleted laps and laps without
@@ -333,6 +385,7 @@ Saved files:
   prediction_inputs.csv  Target evidence scores plus raw diagnostic fields.
   starting_grid.csv      Qualifying position, selected grid and pit-lane status.
   grid_sources.json      Source, publication/capture time, conflicts and fallbacks.
+  weather_context.json   Forecast hours/sources, observations, scenarios, declarations.
   training.csv           Earlier driver-session training examples.
   backtest.csv           Picks, actual winners, ranking error and top-three hits.
   model.json             Native XGBoost component (15% of final score).
@@ -380,7 +433,7 @@ Published grids can include target penalties and pit-lane starts.
 Race/Sprint use seven learned inputs, including separate Q/SQ performance;
 Q/SQ use the original six. Grid and Q/SQ share the existing grid budget equally
 when both are available. No circuit-dependent recovery weight is active.
-No active weather forecast or quantified upgrade effect exists.
+Weather forecasts/declarations are displayed separately; neither changes scores.
 An external chronological comparison includes grid/history-only benchmarks;
 there is no probability calibration or built-in benchmark display yet.
 Eight backtests alone do not establish reliable prediction accuracy.
@@ -566,9 +619,41 @@ It had no automatic Russell grid penalty. Those results predate the active
 session/grid changes and are not the latest prediction. The Hadjar-first output
 used incomplete data and is not a valid comparison for category accuracy.
 
+WEATHER COMPARISON (20 OCTOBER 2026, SINGAPORE TIME)
+Compared unchanged scoring with two fixed alternatives: halve or remove the
+influence of earlier-session performance when its rain flag disagreed with the
+pre-target forecast. Released weight went to history; the actual starting-grid
+component was preserved. Training examples used their own pre-target forecasts.
+No future target weather or results were used as features. Wet-data support is
+sparse; the archived forecast publication-time assumption above also applies.
+
+All 13 eligible GP races, rounds 5-17, 22 drivers each:
+                          Mean places out  Winners  Podium drivers found
+  Keep scoring unchanged       3.238         8/13          25/39
+  Halve mismatched influence   3.252         8/13          25/39
+  Omit mismatched influence    3.252         8/13          25/39
+Lower places out is better. This compares the displayed win-share ranking to
+the actual classification; small changes near tied shares can reorder drivers.
+Direct score-order error was 3.252 / 3.259 / 3.252 respectively. Neither candidate
+established an improvement. In the later six races, displayed errors were
+2.939 / 2.955 / 2.970. The small differences do not establish statistical significance.
+Singapore worsened from 1.909 to 2.091 places with either candidate; the winner
+and all three podium drivers stayed correct. Its standard Race backtest remains
+5/8 with 3.125 average places out. Retain the existing scoring.
+
+All 16 production replays (13 GP plus Singapore Q/SQ/Sprint) exactly matched
+baseline predictions, backtests, training and input CSVs with context enabled.
+152 automated tests passed, including source/time gates, missing data, source
+priority, no bonus for declarations and offline behavior. Source checks fetched
+a live Austin forecast, historical pinned runs, OpenF1 weather and FIA submissions.
+The first four GPs still lack the model's required earlier-season training history;
+they are not silently counted as successes or failures. This is an exploratory
+2026 comparison, not validation across seasons or calibrated probability testing.
+
 REMAINING SCOPE AND EXTERNAL FILES
-Weather forecasts/upgrades, clearer output and probability calibration are
-future work. Detailed overtaking, traffic, strategy and live-session updates
+Clearer output and probability calibration remain future work. Validated wet/dry
+transfer and measured upgrade effects need more evidence. Detailed overtaking,
+traffic, strategy and live-session updates
 are deferred. The DNF-cause adjustment was discarded; early-season fallback is
 also deferred. Section telemetry remains disabled pending validated corrections.
 Raw API responses, caches, ZIPs, telemetry samples, analysis scripts, full driver

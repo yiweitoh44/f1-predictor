@@ -41,3 +41,12 @@ qualifying-order fallbacks. Pit-lane starts are identified separately.
 Race/Sprint scoring keeps qualifying performance separate from the starting
 position and splits their existing evidence budget equally. This reduced average
 ranking error in the 13-race comparison; recovery after penalties remains limited.
+
+Weather context now includes Open-Meteo forecasts, earlier-session FastF1 weather
+with OpenF1 filling missing fields, and dated FIA car-presentation submissions.
+Manual weather scenarios stay separate. These additions do not change scores:
+reducing the weight of weather-mismatched sessions did not improve the 13-race
+comparison. Upgrade declarations are not measured performance gains.
+Use `--weather-source off` to skip these context downloads. Source details,
+forecast hours and limitations are saved outside Git in `weather_context.json`
+alongside the prediction. See START_HERE.txt for historical forecast assumptions.

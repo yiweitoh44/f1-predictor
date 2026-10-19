@@ -3,7 +3,7 @@ Run: python predict_anytime.py --race Singapore --session race
 Requires the existing requirements.txt. No OpenAI API or LLM is used.
 Uses a new training pipeline; it does not reproduce the original GitHub model.
 
-SETUP: Keep session_influence.py, circuit_sections.py, grid_sources.py, tracks.csv and
+SETUP: Keep session_influence.py, circuit_sections.py, grid_sources.py, weather_context.py, tracks.csv and
 requirements.txt beside this file. See START_HERE.txt for setup and scoring.
 Select --session race, qualifying, sprint or sprint-qualifying. Rerun the same
 command after another session's data becomes available. This predicts an
@@ -29,10 +29,12 @@ braking, traction and tyre demands can overlap. Category weights are manual
 starting assumptions. Section telemetry is not downloaded or calculated in
 normal runs and all section-pace columns remain excluded from model fitting.
 
-WEATHER/UPGRADES: Observed weather comes from completed sessions, not forecasts.
---air-temp and --wet record observations/scenarios only; weather is not an
-active model input in this version. There is no upgrade-news feed or quantified
-upgrade effect. Recent team results can reflect changes without identifying them.
+WEATHER/UPGRADES: Open-Meteo forecasts are separate from completed-session
+FastF1/OpenF1 observations and manual --air-temp/--wet scenarios. FIA car
+presentation submissions describe declared changes, not measured speed gains.
+These are context only, not active model inputs. --weather-source off skips
+context downloads. Historical GFS forecasts assume a 12-hour publication delay
+after model initialization; their actual publication time is not verified.
 
 ROSTER/GRID: Before running this weekend, the last known competitive roster is
 assumed unchanged. FP reserve-driver substitutions also need checking. Supply
@@ -66,6 +68,7 @@ import numpy as np
 import pandas as pd
 import session_influence as influence
 import grid_sources
+import weather_context
 from circuit_sections import (GROUP_COLUMNS, GROUP_WEIGHTS, circuit_group_match,
                               historical_section_features)
 
@@ -172,6 +175,9 @@ def read_tracks(path):
         for key in GROUP_COLUMNS + ("profile_source", "profile_basis"):
             value = row.get(key)
             values[key] = "" if pd.isna(value) else str(value).strip()
+        for key, low, high in [('latitude', -90, 90), ('longitude', -180, 180)]:
+            values[key] = weather_context.finite(row.get(key), low, high)
+        values['weather_coordinate_source'] = str(row.get('weather_coordinate_source', ''))
         result[str(row["location"])] = values
     return result
 
@@ -1028,12 +1034,30 @@ def run(args):
                   if qualifying_code in current else 'Starting grid unavailable: qualifying has not loaded.')
             if grid_warnings:
                 print('Published grid unavailable at cutoff; details saved in grid_sources.json.')
-    for value, field in ((args.air_temp, "known_air_temp"), (args.wet, "known_rain")):
-        if value is not None:
-            inputs[field] = value
-    if args.air_temp is not None or args.wet is not None:
-        print("Weather scenario recorded for diagnostics; it does not change this version's prediction.")
     target_track = tracks.get(event["Location"], {})
+    context = weather_context.build_context(
+        CACHE_ROOT, args.year, event, target, target_start, now, target_track, current,
+        offline=args.offline, refresh=args.refresh,
+        live=not args.as_of and pd.Timestamp.now(tz='UTC') < target_start,
+        enabled=getattr(args, 'weather_source', 'auto') != 'off',
+        air_temp=args.air_temp, wet=args.wet)
+    forecast = context['forecast']
+    if forecast:
+        summary = forecast['summary']
+        print(f"Weather forecast: {summary['rain_signal']}; air temperature {summary['air_temperature_range_c']} C.")
+        probability = summary['highest_hourly_rain_probability_pct']
+        if probability is not None:
+            print(f"  Highest hourly rain probability: {probability:g}% (not whole-session probability).")
+        print('  ' + forecast['source'] + '. ' + forecast['timing'])
+        print('  Forecast retrieved: ' + forecast['observed_utc'])
+        print('  Assumed window: ' + forecast['identity']['start'] + ' to ' + forecast['identity']['end'])
+    elif context['enabled']:
+        print('Weather forecast unavailable at this cutoff; see weather_context.json for details.')
+    if context['upgrades']:
+        print('Upgrade declarations: ' + context['upgrades']['url'])
+    if args.air_temp is not None or args.wet is not None:
+        print('Manual weather scenario saved separately from forecasts and observations.')
+    print('Weather/upgrades: context only; no score bonus or weight change.')
     if not (any(np.isfinite(number(target_track.get(k))) for k in TRACK_SCALES)
             or any(target_track.get(k) for k in GROUP_COLUMNS)):
         print("No usable target circuit descriptors in tracks.csv.")
@@ -1086,6 +1110,7 @@ def run(args):
     grid_audit = dict(mode=grid_mode, selected=grid_record, warnings=grid_warnings,
                       fallback='qualifying order' if target in RACE_TYPES and grid_record is None else None)
     (folder / 'grid_sources.json').write_text(json.dumps(json_safe(grid_audit), indent=2), encoding='utf-8')
+    (folder / 'weather_context.json').write_text(json.dumps(json_safe(context), indent=2), encoding='utf-8')
     grid_map = {r['driver']: r for r in grid_record['rows']} if grid_record else {}
     pd.DataFrame([dict(driver=d, qualifying_position=(inputs.iloc[i].qualifying_grid_norm*(len(names)-1)+1)
                       if np.isfinite(inputs.iloc[i].qualifying_grid_norm) else None,
@@ -1156,7 +1181,7 @@ def run(args):
         folder / "section_rejections.csv", index=False)
     metadata = {"target": args.session, "event": event["EventName"], "as_of": now.isoformat(),
                 "used_sessions": list(current), "roster_source": roster_source,
-                "weather": "diagnostic observations/scenarios only; not an active model input; no forecast API",
+                "weather": context,
                 "manual_weather": {"air_temp": args.air_temp, "wet": args.wet},
                 "grid_source": grid_record['source'] if grid_record else "qualifying order when available",
                 "grid_details": grid_audit,
@@ -1178,7 +1203,7 @@ def run(args):
                 "section_analysis": {"enabled": False,
                     "physical_alignment_validated": False,
                     "status": "disabled; legacy diagnostic evidence ignored"},
-                "tracks": tracks, "upgrades": "not separately measured or modelled",
+                "tracks": tracks, "upgrades": "FIA declarations when available; no measured gain or score effect",
                 "historical_data": "current published revisions, not archived as-of snapshots"}
     (folder / "run_info.json").write_text(json.dumps(json_safe(metadata), indent=2), encoding="utf-8")
     print("\nExperimental simulation shares; not calibrated real-world probabilities:")
@@ -1199,10 +1224,12 @@ def main():
     parser.add_argument("--grid", type=Path, help="Optional full driver,grid CSV after qualifying, for grid penalties")
     parser.add_argument("--grid-source", choices=['auto', 'qualifying'], default='auto',
                         help="Auto: dated FIA/F1/OpenF1 grids; qualifying: explicitly use Q/SQ order")
+    parser.add_argument("--weather-source", choices=['auto', 'off'], default='auto',
+                        help="Auto: forecasts, observations and FIA declarations for context; off: skip context downloads")
     parser.add_argument("--refresh", action="store_true", help="Refresh FastF1 and local summary caches")
     parser.add_argument("--rebuild-summaries", action="store_true",
                         help="Recalculate compact summaries, reusing raw FastF1 caches; combine with --offline to forbid downloads")
-    parser.add_argument("--offline", action="store_true", help="Use cached FastF1 data only; do not make network requests")
+    parser.add_argument("--offline", action="store_true", help="Use cached data only; do not make network requests")
     parser.add_argument("--as-of", help="Historical replay cutoff, e.g. 2026-09-25T06:00:00Z")
     parser.add_argument("--simulations", type=int, default=25_000)
     parser.add_argument("--air-temp", type=float, help="Record temperature scenario in Celsius; diagnostic only, no score effect")
