@@ -799,7 +799,7 @@ def fit(frame, columns):
 def train_and_check(frame, target_code):
     # Only the interpretable evidence scores enter the learned adjustment.
     # Raw pace, consistency, counts, weather and section fields remain diagnostics.
-    columns = list(influence.MODEL_COLUMNS)
+    columns = list(influence.RACE_MODEL_COLUMNS if target_code in RACE_TYPES else influence.MODEL_COLUMNS)
     rounds = sorted(frame.event_round.unique())
     if len(rounds) < 4:
         raise ValueError("Need usable history from at least four earlier weekends in this season.")
@@ -1060,6 +1060,8 @@ def run(args):
     if coverage["incomplete"]:
         print("Incomplete data coverage: inspect run_info.json alongside these experimental rankings.")
     print("Section pace: disabled; excluded from model training and predictions.")
+    if target in RACE_TYPES:
+        print("Grid evidence budget: equal starting-grid / qualifying-performance split when both are available.")
     inputs = inputs.assign(**pd.DataFrame([
         influence.add_influence(row, target) for row in inputs.to_dict('records')]))
     model, columns, sigma, tests = train_and_check(frame, target)

@@ -40,5 +40,6 @@ remains disabled.
 Published grids are now selected from dated FIA documents, with F1/OpenF1 and
 qualifying-order fallbacks. Pit-lane starts are identified separately. See
 [GRID_SOURCES.md](GRID_SOURCES.md) for source timing, commands and validation.
-Correcting grid inputs did not improve overall ranking accuracy in the tested
-sample; recovery after penalties remains limited.
+Race/Sprint scoring keeps qualifying performance separate from the starting
+position and splits their existing evidence budget equally. This reduced average
+ranking error in the 13-race comparison; recovery after penalties remains limited.
