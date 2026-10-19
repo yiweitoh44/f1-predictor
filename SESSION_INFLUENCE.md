@@ -17,17 +17,32 @@ These are weights **within the 85% evidence component**, with all listed sources
 available. Missing sources have their weight redistributed for each driver.
 They are not percentages of winning probability.
 
-| Target | History | Starting grid | Earlier Sprint | Earlier SQ | Practice |
+| Target | History | Grid + Q/SQ budget | Earlier Sprint | Earlier SQ | Practice |
 |---|---:|---:|---:|---:|---:|
 | Grand Prix | 20% | 65% | 10% | 2.5% | 2.5% |
 | Sprint | 20% | 75% | 0% | 0% | 5% |
 | Qualifying | 30% | 0% | 10% | 50% | 10% |
 | Sprint qualifying | 85% | 0% | 0% | 0% | 15% |
 
+For GP/Sprint, split the grid budget **equally between the actual starting grid
+and corresponding Q/SQ position** when both are available. With all listed
+sources, the GP's 65% budget becomes 32.5% each, and the Sprint's 75% becomes
+37.5% each. Other budgets are unchanged. Missing/invalid Q/SQ performance keeps
+the existing anchor. Qualifying position is a performance proxy; mixed-stage
+lap-time gaps are not an active input. This fixed split does not use circuit
+grid-stickiness assumptions.
+
+`influence_weight_grid` records the combined budget. Its applied components are
+`influence_weight_starting_grid` and `influence_weight_grid_qualifying`; do not
+add those components to the combined budget again. Race/Sprint also supply
+`influence_grid_qualifying` separately to the learned component. Qualifying
+targets retain their original six model inputs and scoring.
+
 Before current sessions exist, history supplies the evidence component. On a
 normal weekend, qualifying with only history and practice uses 75%/25% within
-that component. Grid means Q order for a GP or SQ order for a Sprint, unless a
-complete verified `--grid` is supplied. Automatic penalties remain future work.
+that component. Grid uses the selected published starting grid when available, with Q/SQ
+order as fallback and a complete `--grid` CSV as an explicit override.
+See GRID_SOURCES.md for source preference, timing and pit-lane handling.
 
 Historical evidence combines driver form (65%), current-team form (25%) and
 driver form at related circuits (10%), redistributing absent components.
@@ -136,8 +151,9 @@ uncertainty still uses only the latest four eligible tests, preserving the
 previous prediction shares. Before this reporting expansion the CLI showed
 2/4 winners, mean ranking error 3.50 and 8/12 top-three slots.
 
-All four target modes completed offline 22-driver Singapore replays with
-25,000 sampled rankings. Saved models contain only six evidence columns and
+At the session-influence checkpoint, all four target modes completed offline
+22-driver Singapore replays with 25,000 sampled rankings. Saved models then
+contained only six evidence columns and
 no section inputs. The saved native component plus the recorded blend
 reproduces the score. A real-data check changed only Antonelli's Sprint P4 to
 P20: his score worsened from 0.15155 to 0.20566 (lower is better). Changing only
@@ -158,16 +174,21 @@ The test file is therefore not supplied by a fresh clone of this repository.
 `session_influence.csv` contains each driver's evidence scores and effective
 weights. `influence_policy.json` records the settings. `model.json` is **only
 the native 15% component**; full inference also requires the evidence anchor
-and the blend recorded in `run_info.json`. Its six input columns are
+and the blend recorded in `run_info.json`. The original six input columns are
 `influence_history`, `influence_grid`, `influence_sprint`,
 `influence_qualifying`, `influence_practice`, and `influence_anchor`.
+Race/Sprint now add `influence_grid_qualifying` as a seventh input and use the
+equal grid/qualifying anchor split above. Q/SQ retain six. `model_features`
+in `run_info.json` records the exact fitted columns. See GRID_SOURCES.md for
+the 13-race comparison and current 124-check validation.
 Missing source inputs use history in the learned component. Raw diagnostics in
 `prediction_inputs.csv` are not all model inputs.
 
 Weather fields and `--air-temp`/`--wet` currently record diagnostics only and
 do not change predictions. Weather transfer and forecasts belong to the
-weather-context branch. Grid penalties, pit-lane handling, richer output and
-probability calibration also remain separate work. Simulation percentages are
+weather-context branch. Published grids and explicit pit-lane flags are now
+handled by grid_sources.py; pit-exit delay and detailed recovery remain limited.
+Richer output and probability calibration remain separate work. Simulation percentages are
 uncalibrated sampled-ranking shares, not measured winning probabilities.
 
 A clean installation needs historical data downloaded from FastF1; a cache

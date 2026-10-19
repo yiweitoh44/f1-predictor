@@ -3,7 +3,7 @@ Run: python predict_anytime.py --race Singapore --session race
 Requires the existing requirements.txt. No OpenAI API or LLM is used.
 Uses a new training pipeline; it does not reproduce the original GitHub model.
 
-SETUP: Keep session_influence.py, circuit_sections.py, tracks.csv and
+SETUP: Keep session_influence.py, circuit_sections.py, grid_sources.py, tracks.csv and
 requirements.txt beside this file. See START_HERE.txt and SESSION_INFLUENCE.md.
 Select --session race, qualifying, sprint or sprint-qualifying. Rerun the same
 command after another session's data becomes available. This predicts an
@@ -36,9 +36,11 @@ upgrade effect. Recent team results can reflect changes without identifying them
 
 ROSTER/GRID: Before running this weekend, the last known competitive roster is
 assumed unchanged. FP reserve-driver substitutions also need checking. Supply
---roster with driver,team,name columns to correct it. Grid defaults to qualifying
-order; use --grid driver,grid CSV with every driver once after qualifying to
-account for penalties. Pit-lane starters can only be approximated at the back.
+--roster with driver,team,name columns to correct it. After qualifying, automatic
+grid selection prefers dated FIA documents, then F1/OpenF1 records observed
+before the cutoff. Qualifying order is the fallback. --grid overrides sources;
+--grid-source qualifying explicitly uses qualifying order. Pit-lane starters
+are identified separately and share a back-of-field score; delay is not modelled.
 
 OUTPUTS: ~/F1Data/outputs/year_round_session/latest holds predictions, training,
 prediction_inputs, backtest CSVs, model.json, run_info.json and section diagnostic
@@ -63,6 +65,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import session_influence as influence
+import grid_sources
 from circuit_sections import (GROUP_COLUMNS, GROUP_WEIGHTS, circuit_group_match,
                               historical_section_features)
 
@@ -626,6 +629,7 @@ def features(driver, target_code, event, history, inputs, tracks):
     grid_source = inputs.get("Q" if target_code == "R" else "SQ") if target_code in RACE_TYPES else None
     grid_driver = next((d for d in grid_source["drivers"] if d["driver"] == code), {}) if grid_source else {}
     row["start_grid_norm"] = number(grid_driver.get("position_norm"))
+    row["qualifying_grid_norm"] = row["start_grid_norm"]
     for session_code in INPUTS:
         data = inputs.get(session_code)
         row[session_code + "_available"] = float(data is not None)
@@ -795,7 +799,7 @@ def fit(frame, columns):
 def train_and_check(frame, target_code):
     # Only the interpretable evidence scores enter the learned adjustment.
     # Raw pace, consistency, counts, weather and section fields remain diagnostics.
-    columns = list(influence.MODEL_COLUMNS)
+    columns = list(influence.RACE_MODEL_COLUMNS if target_code in RACE_TYPES else influence.MODEL_COLUMNS)
     rounds = sorted(frame.event_round.unique())
     if len(rounds) < 4:
         raise ValueError("Need usable history from at least four earlier weekends in this season.")
@@ -995,21 +999,35 @@ def run(args):
         raise ValueError("Roster is incomplete or contains duplicate drivers.")
     print("Roster: " + roster_source)
     inputs = pd.DataFrame([features(d, target, event, history, current, tracks) for d in drivers])
+    grid_record = None
+    grid_warnings = []
+    grid_mode = getattr(args, 'grid_source', 'auto')
+    qualifying_code = 'Q' if target == 'R' else 'SQ'
+    if args.grid and (target not in RACE_TYPES or qualifying_code not in current):
+        raise ValueError("Use --grid only for a race after its qualifying data is available.")
     if target in RACE_TYPES:
-        print("Starting grid defaults to qualifying order when available; penalties require --grid.")
-    if args.grid:
-        if target not in RACE_TYPES or ("Q" if target == "R" else "SQ") not in current:
-            raise ValueError("Use --grid only for a race after its qualifying data is available.")
-        grid = pd.read_csv(args.grid, encoding="utf-8-sig")
-        if not {"driver", "grid"}.issubset(grid.columns):
-            raise ValueError("Grid CSV requires driver,grid columns with every entered driver.")
-        grid["driver"] = grid.driver.astype(str).str.strip().str.upper()
-        grid["grid"] = pd.to_numeric(grid.grid, errors="raise")
-        if (grid.driver.duplicated().any() or set(grid.driver) != set(names)
-                or set(grid.grid) != set(range(1, len(names) + 1))):
-            raise ValueError("Grid CSV must contain every driver once and each grid position 1 through the field size once. Approximate pit-lane starters as last.")
-        mapping = dict(zip(grid.driver, grid.grid))
-        inputs["start_grid_norm"] = [(mapping[d] - 1) / (len(names) - 1) for d in names]
+        if args.grid:
+            grid_record = grid_sources.manual_grid(args.grid, drivers, now)
+        elif qualifying_code in current and grid_mode != 'qualifying':
+            grid_store = grid_sources.GridStore(CACHE_ROOT, args.offline, args.refresh)
+            grid_record = grid_store.resolve(args.year, event, target, drivers, now,
+                live=not args.as_of and pd.Timestamp.now(tz='UTC') < target_start)
+            grid_warnings = grid_store.warnings
+        if grid_record:
+            grid_sources.apply_grid(inputs, drivers, grid_record)
+            print(f"Starting grid: {grid_record['source']} ({grid_record['url']}).")
+            pit_drivers = [r['driver'] for r in grid_record['rows'] if r.get('pit_lane') is True]
+            if pit_drivers:
+                print('Pit-lane starters: ' + ', '.join(pit_drivers) + '; back-of-field score, exit order/delay not modelled.')
+            if any(r.get('pit_lane') is None for r in grid_record['rows']):
+                print('This grid source does not identify pit-lane starters; status is unknown.')
+            if grid_record.get('conflicts'):
+                print('Grid sources disagree; using the higher-priority source. See grid_sources.json.')
+        else:
+            print('Starting grid: qualifying order fallback; penalties/pit-lane changes are not confirmed.'
+                  if qualifying_code in current else 'Starting grid unavailable: qualifying has not loaded.')
+            if grid_warnings:
+                print('Published grid unavailable at cutoff; details saved in grid_sources.json.')
     for value, field in ((args.air_temp, "known_air_temp"), (args.wet, "known_rain")):
         if value is not None:
             inputs[field] = value
@@ -1042,6 +1060,8 @@ def run(args):
     if coverage["incomplete"]:
         print("Incomplete data coverage: inspect run_info.json alongside these experimental rankings.")
     print("Section pace: disabled; excluded from model training and predictions.")
+    if target in RACE_TYPES:
+        print("Grid evidence budget: equal starting-grid / qualifying-performance split when both are available.")
     inputs = inputs.assign(**pd.DataFrame([
         influence.add_influence(row, target) for row in inputs.to_dict('records')]))
     model, columns, sigma, tests = train_and_check(frame, target)
@@ -1063,6 +1083,19 @@ def run(args):
     output.to_csv(folder / "predictions.csv", index=False)
     frame.to_csv(folder / "training.csv", index=False)
     inputs.assign(driver=names).to_csv(folder / "prediction_inputs.csv", index=False)
+    grid_audit = dict(mode=grid_mode, selected=grid_record, warnings=grid_warnings,
+                      fallback='qualifying order' if target in RACE_TYPES and grid_record is None else None)
+    (folder / 'grid_sources.json').write_text(json.dumps(json_safe(grid_audit), indent=2), encoding='utf-8')
+    grid_map = {r['driver']: r for r in grid_record['rows']} if grid_record else {}
+    pd.DataFrame([dict(driver=d, qualifying_position=(inputs.iloc[i].qualifying_grid_norm*(len(names)-1)+1)
+                      if np.isfinite(inputs.iloc[i].qualifying_grid_norm) else None,
+                      grid_position=grid_map[d]['position'] if d in grid_map else
+                          (inputs.iloc[i].start_grid_norm*(len(names)-1)+1 if np.isfinite(inputs.iloc[i].start_grid_norm) else None),
+                      pit_lane=grid_map.get(d, {}).get('pit_lane'),
+                      grid_score=inputs.iloc[i].start_grid_norm,
+                      source=grid_record['source'] if grid_record else
+                          ('qualifying fallback' if target in RACE_TYPES else 'not applicable'))
+                  for i,d in enumerate(names)]).to_csv(folder/'starting_grid.csv',index=False)
     pd.DataFrame(tests).to_csv(folder / "backtest.csv", index=False)
     model.save_model(folder / "model.json")
     (folder / "influence_policy.json").write_text(json.dumps(influence.policy(), indent=2), encoding="utf-8")
@@ -1125,7 +1158,8 @@ def run(args):
                 "used_sessions": list(current), "roster_source": roster_source,
                 "weather": "diagnostic observations/scenarios only; not an active model input; no forecast API",
                 "manual_weather": {"air_temp": args.air_temp, "wet": args.wet},
-                "grid_source": str(args.grid) if args.grid else "qualifying order when available",
+                "grid_source": grid_record['source'] if grid_record else "qualifying order when available",
+                "grid_details": grid_audit,
                 "sigma_normalized_positions": sigma, "simulations": args.simulations,
                 "backtest_maximum_weekends": BACKTEST_WEEKENDS,
                 "uncertainty_maximum_weekends": UNCERTAINTY_WEEKENDS,
@@ -1163,6 +1197,8 @@ def main():
     parser.add_argument("--tracks", type=Path, default=ROOT / "tracks.csv")
     parser.add_argument("--roster", type=Path, help="Optional verified driver,team,name CSV")
     parser.add_argument("--grid", type=Path, help="Optional full driver,grid CSV after qualifying, for grid penalties")
+    parser.add_argument("--grid-source", choices=['auto', 'qualifying'], default='auto',
+                        help="Auto: dated FIA/F1/OpenF1 grids; qualifying: explicitly use Q/SQ order")
     parser.add_argument("--refresh", action="store_true", help="Refresh FastF1 and local summary caches")
     parser.add_argument("--rebuild-summaries", action="store_true",
                         help="Recalculate compact summaries, reusing raw FastF1 caches; combine with --offline to forbid downloads")

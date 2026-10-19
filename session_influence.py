@@ -18,6 +18,8 @@ SOURCE_WEIGHTS = {
     'SQ': dict(history=.85, grid=0., sprint=0., qualifying=0., practice=.15),
 }
 MODEL_COLUMNS = ['influence_' + k for k in SOURCE_NAMES] + ['influence_anchor']
+RACE_MODEL_COLUMNS = MODEL_COLUMNS + ['influence_grid_qualifying']
+GRID_QUALIFYING_SHARE = 0.5
 
 
 def numeric(value):
@@ -114,12 +116,29 @@ def add_influence(row, target):
     out = {'influence_' + k: values[k] if np.isfinite(values[k]) else history for k in SOURCE_NAMES}
     out['influence_anchor'] = float(anchor)
     out.update({'influence_weight_' + k: weights[k] for k in SOURCE_NAMES})
+    # Preserve qualifying performance when a penalty changes the starting grid.
+    # Split the existing grid budget; do not add a second full evidence budget.
+    qualifying = numeric(row.get('qualifying_grid_norm'))
+    if np.isfinite(qualifying) and not 0 <= qualifying <= 1:
+        qualifying = np.nan
+    out['influence_grid_qualifying'] = qualifying if np.isfinite(qualifying) else history
+    out['influence_weight_starting_grid'] = weights['grid']
+    out['influence_weight_grid_qualifying'] = 0.
+    if target in {'R', 'S'} and np.isfinite(qualifying) and np.isfinite(values['grid']):
+        qualifying_weight = weights['grid'] * GRID_QUALIFYING_SHARE
+        out['influence_anchor'] += qualifying_weight * (qualifying - values['grid'])
+        out['influence_weight_starting_grid'] -= qualifying_weight
+        out['influence_weight_grid_qualifying'] = qualifying_weight
     return out
 
 
 def policy():
     return dict(history_weekends=HISTORY_WEEKENDS, history_half_life_rounds=HISTORY_HALF_LIFE,
                 learned_adjustment_share=LEARNED_SHARE, source_weights=SOURCE_WEIGHTS,
+                race_model_columns=RACE_MODEL_COLUMNS,
+                grid_qualifying_share=GRID_QUALIFYING_SHARE,
+                grid_budget='Race/Sprint split the existing grid budget equally between starting grid and Q/SQ position when both are available; otherwise retain the existing anchor',
+                grid_weight_diagnostics='influence_weight_grid is the combined budget; influence_weight_starting_grid and influence_weight_grid_qualifying are its applied components',
                 comparable_pace_gap_range_pct=[0, PACE_MAX_GAP_PCT],
                 maximum_clean_lap_ratio=PACE_MAX_LAP_SPREAD,
                 pace_minimum_driver_samples=2, pace_minimum_field_drivers=4,
