@@ -4,7 +4,7 @@ Requires the existing requirements.txt. No OpenAI API or LLM is used.
 Uses a new training pipeline; it does not reproduce the original GitHub model.
 
 SETUP: Keep session_influence.py, circuit_sections.py, grid_sources.py, tracks.csv and
-requirements.txt beside this file. See START_HERE.txt and SESSION_INFLUENCE.md.
+requirements.txt beside this file. See START_HERE.txt for setup and scoring.
 Select --session race, qualifying, sprint or sprint-qualifying. Rerun the same
 command after another session's data becomes available. This predicts an
 unstarted session, not an in-progress race. At least four usable earlier
@@ -51,7 +51,7 @@ are retained. --refresh explicitly renews data; --offline uses cached data only.
 --as-of allows historical replay, but uses today's published historical
 revisions, not original archived data snapshots.
 
-VALIDATION: See SESSION_INFLUENCE.md for chronological comparisons, regression
+VALIDATION: See START_HERE.txt for chronological comparisons, regression
 checks and the Sprint Qualifying limitation. Cached replays do not validate
 fresh timing downloads or the raw-lap cause of extreme legacy practice gaps.
 Section pace remains disabled and excluded from training and predictions.

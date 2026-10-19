@@ -31,15 +31,13 @@ These improvements are planned and are not all implemented yet.
 
 This is an experimental learning project. Its simulation percentages are not validated real-world probabilities, and prediction accuracy is still being evaluated.
 
-See [START_HERE.txt](START_HERE.txt) for commands and cache handling, and
-[SESSION_INFLUENCE.md](SESSION_INFLUENCE.md) for the implemented session weights,
-historical windows, validation results and remaining limits. Manual circuit
+See [START_HERE.txt](START_HERE.txt) for setup, commands, cache handling,
+session weights, grid sources, validation results and remaining limits. Manual circuit
 categories and tyre-aware pace comparisons are implemented; section telemetry
 remains disabled.
 
 Published grids are now selected from dated FIA documents, with F1/OpenF1 and
-qualifying-order fallbacks. Pit-lane starts are identified separately. See
-[GRID_SOURCES.md](GRID_SOURCES.md) for source timing, commands and validation.
+qualifying-order fallbacks. Pit-lane starts are identified separately.
 Race/Sprint scoring keeps qualifying performance separate from the starting
 position and splits their existing evidence budget equally. This reduced average
 ranking error in the 13-race comparison; recovery after penalties remains limited.
