@@ -44,7 +44,11 @@ are identified separately and share a back-of-field score; delay is not modelled
 
 OUTPUTS: ~/F1Data/outputs/year_round_session/latest holds predictions, training,
 prediction_inputs, backtest CSVs, model.json, run_info.json and section diagnostic
-CSVs. model.json stores the learned component; influence_policy.json records
+CSVs. Tables use mean simulated position. Race/Sprint show close adjacent
+matchups on the lower driver's row; Q/SQ show pole share. Full simulation
+diagnostics stay in simulation_details.csv. Backtest comparisons against grid
+and qualifying order (history only for Q/SQ) use matching eligible weekends.
+model.json stores the learned component; influence_policy.json records
 the blend. Rerunning the same event/session replaces its latest files. Raw caches
 are retained. --refresh explicitly renews data; --offline uses cached data only.
 --rebuild-summaries recalculates summaries using ordinary raw cache reuse.
@@ -76,6 +80,8 @@ OUTPUT_ROOT = DATA_ROOT / "outputs"
 SUMMARY_SCHEMA = 5
 BACKTEST_WEEKENDS = 8
 UNCERTAINTY_WEEKENDS = 4
+CLOSE_CALL_MIN_PCT = 45.0
+CLOSE_CALL_MAX_PCT = 55.0
 SESSION_NAMES = {"Practice 1": "FP1", "Practice 2": "FP2", "Practice 3": "FP3",
                  "Sprint Qualifying": "SQ", "Sprint Shootout": "SQ",
                  "Sprint": "S", "Qualifying": "Q", "Race": "R"}
@@ -737,6 +743,12 @@ def training_rows(events, all_data, family, mask, tracks):
                 # Actual historical grids are pre-race information, but use them
                 # only at a stage where the corresponding qualifying is available.
                 grid = number(driver.get("grid"))
+                # Reporting only: never mistake a qualifying fallback for an
+                # independently recorded historical starting grid.
+                row['benchmark_grid_position'] = (
+                    grid if code in RACE_TYPES and ("Q" if code == "R" else "SQ") in inputs
+                    and np.isfinite(grid) and grid == int(grid) and 1 <= grid <= len(label['drivers'])
+                    else np.nan)
                 if code in RACE_TYPES and ("Q" if code == "R" else "SQ") in inputs and grid > 0:
                     row["start_grid_norm"] = (grid - 1) / max(1, len(label["drivers"]) - 1)
                     row.update(influence.add_influence(row, code))
@@ -796,7 +808,69 @@ def fit(frame, columns):
     return NativeModel()
 
 
-def train_and_check(frame, target_code):
+def ranking_metrics(drivers, predicted, actual):
+    """Same classified drivers for every method; tied scores share mean rank."""
+    drivers = np.asarray(drivers)
+    predicted, actual = np.asarray(predicted, dtype=float), np.asarray(actual, dtype=float)
+    if len(drivers) < 3 or not (len(predicted) == len(actual) == len(drivers)):
+        raise ValueError('Ranking comparison needs at least three matching drivers.')
+    if not np.isfinite(predicted).all() or not np.isfinite(actual).all():
+        raise ValueError('Ranking comparison requires complete scores and classifications.')
+    order = np.lexsort((drivers, predicted))
+    actual_order = np.lexsort((drivers, actual))
+    return dict(pick=str(drivers[order[0]]), actual=str(drivers[actual_order[0]]),
+                correct=bool(drivers[order[0]] == drivers[actual_order[0]]),
+                mean_rank_error=float(np.mean(np.abs(pd.Series(predicted).rank().to_numpy()
+                                                    - pd.Series(actual).rank().to_numpy()))),
+                top3_hits=len(set(drivers[order[:3]]) & set(drivers[actual_order[:3]])))
+
+
+def benchmark_records(group, predicted, rnd, target):
+    """Reporting uses pre-target evidence; never fill a missing baseline with labels."""
+    methods = {'Model': np.asarray(predicted, dtype=float)}
+    if target in RACE_TYPES:
+        methods.update({'Starting grid': group.get('benchmark_grid_position'),
+                        'Qualifying order': group.get('qualifying_grid_norm')})
+    else:
+        # Q/SQ's own eventual order cannot be a pre-session benchmark.
+        methods['History only'] = group.get('influence_history')
+    records = []
+    for method, values in methods.items():
+        record = dict(round=int(rnd), session=target, method=method, eligible=False,
+                      reason='', drivers=len(group), pick=None, actual=None, correct=None,
+                      mean_rank_error=None, top3_hits=None)
+        if len(group) < 3:
+            record['reason'] = 'fewer than three classified drivers for a top-three comparison'
+        elif values is None or not np.isfinite(np.asarray(values, dtype=float)).all():
+            record['reason'] = 'missing pre-session evidence for one or more classified drivers'
+        elif method == 'Starting grid' and (np.any(np.asarray(values) < 1)
+                or len(set(values)) != len(values)):
+            record['reason'] = 'missing/ambiguous grid slots; no qualifying fallback used'
+        elif method == 'Qualifying order' and (np.any(np.asarray(values) < 0)
+                or np.any(np.asarray(values) > 1)):
+            record['reason'] = 'invalid qualifying positions'
+        else:
+            record.update(eligible=True, **ranking_metrics(group.driver, values, group.label))
+        records.append(record)
+    return records
+
+
+def comparison_summary(records, target):
+    methods = ['Model', 'Starting grid', 'Qualifying order'] if target in RACE_TYPES else ['Model', 'History only']
+    eligible = [{r['round'] for r in records if r['method'] == method and r['eligible']} for method in methods]
+    common = set.intersection(*eligible)
+    rows = []
+    for method in methods:
+        selected = [r for r in records if r['round'] in common and r['method'] == method and r['eligible']]
+        if selected:
+            rows.append({'Method': method, 'First correct': f"{sum(r['correct'] for r in selected)}/{len(selected)}",
+                         'Podium drivers' if target in RACE_TYPES else 'Top-three drivers':
+                             f"{sum(r['top3_hits'] for r in selected)}/{3*len(selected)}",
+                         'Avg places out': float(np.mean([r['mean_rank_error'] for r in selected]))})
+    return sorted(common), rows
+
+
+def train_and_check(frame, target_code, comparison_rows=None):
     # Only the interpretable evidence scores enter the learned adjustment.
     # Raw pace, consistency, counts, weather and section fields remain diagnostics.
     columns = list(influence.RACE_MODEL_COLUMNS if target_code in RACE_TYPES else influence.MODEL_COLUMNS)
@@ -817,7 +891,7 @@ def train_and_check(frame, target_code):
             "three earlier training weekends."
         )
 
-    errors, details = [], []
+    errors, details, comparisons = [], [], []
     for rnd in test_rounds:
         train = frame[frame.event_round < rnd]
         test = frame[
@@ -844,6 +918,7 @@ def train_and_check(frame, target_code):
                             "pick": picked, "actual": actual, "correct": picked == actual,
                             "mean_rank_error": float(np.mean(np.abs(ranks-actual_ranks))),
                             "top3_hits": len(set(group.driver.iloc[order[:3]]) & set(group.driver.iloc[actual_order[:3]]))})
+            comparisons.extend(benchmark_records(group, guess, rnd, session_code))
     uncertainty_rounds = set(test_rounds[-UNCERTAINTY_WEEKENDS:])
     recent_errors = [r for r in errors if r['round'] in uncertainty_rounds]
     exact = [r["error"] for r in recent_errors if r["session"] == target_code]
@@ -854,6 +929,16 @@ def train_and_check(frame, target_code):
           f"{sum(d['session'] == target_code for d in details)} tests of the requested session type.")
     print(f"Backtest ranking: mean position error {np.mean([d['mean_rank_error'] for d in details]):.2f}; "
           f"top-three drivers found {sum(d['top3_hits'] for d in details)}/{3*len(details)}.")
+    common, table = comparison_summary(comparisons, target_code)
+    if table:
+        print(f"Backtest comparison: same {len(common)} of these {len(test_rounds)} tests; lower places out is better.")
+        print(pd.DataFrame(table).to_string(index=False, float_format=lambda x: f'{x:.2f}'))
+    else:
+        print('Backtest comparison unavailable: insufficient matching pre-session baseline evidence.')
+    if len(common) < len(test_rounds):
+        print('Incomplete comparisons are excluded from every method in the comparison table; reasons saved in backtest_comparisons.csv.')
+    if comparison_rows is not None:
+        comparison_rows.extend(comparisons)
     print(f"Simulation uncertainty uses the latest {len(uncertainty_rounds)} eligible tests; "
           f"the report shows up to {BACKTEST_WEEKENDS}.")
     if len(exact) < 20:
@@ -862,7 +947,7 @@ def train_and_check(frame, target_code):
     return fit(frame, columns), columns, sigma, details
 
 
-def simulate(scores, sigma, count):
+def simulate(scores, sigma, count, return_positions=False):
     rng = np.random.default_rng(42)
     ranks = np.argsort(scores[None, :] + rng.normal(0, sigma, (count, len(scores))), axis=1)
     win = np.bincount(ranks[:, 0], minlength=len(scores)) * 100 / count
@@ -870,7 +955,60 @@ def simulate(scores, sigma, count):
     order_sum = np.zeros(len(scores))
     for place in range(len(scores)):
         order_sum += np.bincount(ranks[:, place], minlength=len(scores)) * (place + 1)
-    return win, top3, order_sum / count
+    result = (win, top3, order_sum / count)
+    if return_positions:
+        positions = np.empty(ranks.shape, dtype=np.int32)
+        np.put_along_axis(positions, ranks, np.arange(1, len(scores)+1)[None, :], axis=1)
+        return (*result, positions)
+    return result
+
+
+def prediction_tables(drivers, scores, win, top3, average, positions, target):
+    """Display by mean position; pairwise percentages use the very same draws."""
+    names = np.asarray([d['driver'] for d in drivers])
+    order = np.lexsort((names, scores, average))
+    short_names = [str(d.get('name', d['driver'])).split()[-1] for d in drivers]
+    labels = [str(d.get('name', d['driver'])) if short_names.count(short_names[i]) > 1 else short_names[i]
+              for i, d in enumerate(drivers)]
+    rows, audit = [], []
+    for rank, i in enumerate(order, 1):
+        participant = drivers[i]
+        row = dict(predicted_position=rank, driver=participant['driver'],
+                   name=participant.get('name', participant['driver']), team=participant['team'])
+        above, ahead, close_call = None, None, ''
+        if rank > 1:
+            j = order[rank-2]
+            above = drivers[j]['driver']
+            ahead = float(np.mean(positions[:, i] < positions[:, j]) * 100)
+            if CLOSE_CALL_MIN_PCT <= ahead <= CLOSE_CALL_MAX_PCT:
+                close_call = f'↑ {labels[i]} beats {labels[j]} in {ahead:.1f}% of simulations'
+        if target in RACE_TYPES:
+            row.update(mean_position=float(average[i]), close_call=close_call)
+        else:
+            row['pole_pct'] = float(win[i])
+        rows.append(row)
+        audit.append(dict(predicted_position=rank, driver=participant['driver'], score=float(scores[i]),
+                          first_pct=float(win[i]), top3_pct=float(top3[i]), mean_position=float(average[i]),
+                          driver_above=above, ahead_of_above_pct=ahead,
+                          close_call=bool(close_call) if target in RACE_TYPES else False))
+    return pd.DataFrame(rows), pd.DataFrame(audit)
+
+
+def print_prediction_table(output):
+    display = output.drop(columns='driver').rename(columns={
+        'predicted_position': 'Position', 'name': 'Driver', 'team': 'Team',
+        'mean_position': 'Mean position', 'pole_pct': 'Pole share', 'close_call': 'Close call'})
+    if 'Pole share' in display:
+        display['Pole share'] = display['Pole share'].map(lambda x: f'{x:.1f}%')
+    rendered = display.to_string(index=False, float_format=lambda x: f'{x:.2f}')
+    # Older Windows terminals may not support Unicode; preserve the meaning.
+    import sys
+    encoding = getattr(sys.stdout, 'encoding', None) or 'utf-8'
+    try:
+        '↑'.encode(encoding)
+    except UnicodeEncodeError:
+        rendered = rendered.replace('↑', '^')
+    print(rendered)
 
 
 def run(args):
@@ -1064,23 +1202,15 @@ def run(args):
         print("Grid evidence budget: equal starting-grid / qualifying-performance split when both are available.")
     inputs = inputs.assign(**pd.DataFrame([
         influence.add_influence(row, target) for row in inputs.to_dict('records')]))
-    model, columns, sigma, tests = train_and_check(frame, target)
+    comparisons = []
+    model, columns, sigma, tests = train_and_check(frame, target, comparison_rows=comparisons)
     scores = model.predict(inputs[columns])
-    win, top3, average = simulate(scores, sigma, args.simulations)
-    output = pd.DataFrame({"driver": names, "name": [d.get("name", d["driver"]) for d in drivers],
-                           "team": [d["team"] for d in drivers], "first_pct": win,
-                           "top3_pct": top3, "mean_simulated_position": average}).sort_values("first_pct", ascending=False)
+    win, top3, average, positions = simulate(scores, sigma, args.simulations, return_positions=True)
+    output, simulation_details = prediction_tables(drivers, scores, win, top3, average, positions, target)
     folder = OUTPUT_ROOT / f"{args.year}_{int(event['RoundNumber']):02d}_{args.session}" / "latest"
     folder.mkdir(parents=True, exist_ok=True)
-    if target in {"Q", "SQ"}:
-        output = output.rename(columns={"first_pct": "pole_pct"})
-        output = output.drop(columns=["top3_pct", "mean_simulated_position"])
-    else:
-        output = output.rename(columns={
-        "first_pct": "win_pct",
-        "top3_pct": "podium_pct",
-        })
     output.to_csv(folder / "predictions.csv", index=False)
+    simulation_details.to_csv(folder / 'simulation_details.csv', index=False)
     frame.to_csv(folder / "training.csv", index=False)
     inputs.assign(driver=names).to_csv(folder / "prediction_inputs.csv", index=False)
     grid_audit = dict(mode=grid_mode, selected=grid_record, warnings=grid_warnings,
@@ -1097,6 +1227,7 @@ def run(args):
                           ('qualifying fallback' if target in RACE_TYPES else 'not applicable'))
                   for i,d in enumerate(names)]).to_csv(folder/'starting_grid.csv',index=False)
     pd.DataFrame(tests).to_csv(folder / "backtest.csv", index=False)
+    pd.DataFrame(comparisons).to_csv(folder / 'backtest_comparisons.csv', index=False)
     model.save_model(folder / "model.json")
     (folder / "influence_policy.json").write_text(json.dumps(influence.policy(), indent=2), encoding="utf-8")
     inputs[[c for c in inputs if c.startswith('influence_')]].assign(driver=names).to_csv(
@@ -1162,6 +1293,17 @@ def run(args):
                 "grid_details": grid_audit,
                 "sigma_normalized_positions": sigma, "simulations": args.simulations,
                 "backtest_maximum_weekends": BACKTEST_WEEKENDS,
+                "validation_comparison": {
+                    "common_rounds": comparison_summary(comparisons, target)[0],
+                    "model_order": "score order (expected mean-position order under shared simulation noise)",
+                    "grid_basis": "historical FastF1 grid when qualifying is available; current published revisions; no qualifying fallback for a missing benchmark grid",
+                    "missing_baseline": "exclude the weekend from every method in the comparison table; retain full model backtest report",
+                    "ties": "mean ranks for ranking error; driver code breaks tied first/podium picks"},
+                "output_policy": {
+                    "order": "mean simulated position, then model score, then driver code",
+                    "close_call_ahead_pct_range": [CLOSE_CALL_MIN_PCT, CLOSE_CALL_MAX_PCT],
+                    "close_call": "Race/Sprint lower row only; fraction of the same simulations where this driver finishes ahead of the adjacent driver above",
+                    "simulation_details": "unchanged first/top-three shares, scores, means and adjacent comparisons saved separately"},
                 "uncertainty_maximum_weekends": UNCERTAINTY_WEEKENDS,
                 "model_features": columns,
                 "section_pace_model_inputs": False,
@@ -1181,10 +1323,10 @@ def run(args):
                 "tracks": tracks, "upgrades": "not separately measured or modelled",
                 "historical_data": "current published revisions, not archived as-of snapshots"}
     (folder / "run_info.json").write_text(json.dumps(json_safe(metadata), indent=2), encoding="utf-8")
-    print("\nExperimental simulation shares; not calibrated real-world probabilities:")
-    print(output.to_string(index=False, float_format=lambda x: f"{x:.1f}"))
-    print("First = pole for qualifying; winner for a race. Top3 = qualifying top three or race podium.")
-    print("These are sampled rankings, not lap-by-lap simulations. Race DNFs are learned through results; no extra retirement lottery.")
+    print("\nPrediction ordered by mean simulated position. Shares are experimental, not calibrated probabilities.")
+    if target in RACE_TYPES:
+        print('Close calls: the named row driver beats the driver above in 45–55% of simulations.')
+    print_prediction_table(output)
     print(f"Saved: {folder}")
 
 

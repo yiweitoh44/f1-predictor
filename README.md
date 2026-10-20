@@ -41,3 +41,14 @@ qualifying-order fallbacks. Pit-lane starts are identified separately.
 Race/Sprint scoring keeps qualifying performance separate from the starting
 position and splits their existing evidence budget equally. This reduced average
 ranking error in the 13-race comparison; recovery after penalties remains limited.
+
+Prediction tables now show an explicit position ordered by mean simulated rank.
+Race/Sprint tables show mean position and close matchups on the lower driver's
+row, for example: "Hamilton beats Antonelli in 49.8% of simulations".
+Q/SQ tables show predicted position and pole share. These shares are uncalibrated.
+
+The existing backtest section also compares the model with starting-grid and
+qualifying order on matching eligible weekends; Q/SQ use a history-only reference.
+Scoring is unchanged. Across 13 eligible GP replays, the mean-position display
+averaged 3.259 places out versus 3.510 for grid order, with both picking 8/13 winners.
+See START_HERE.txt for coverage, limitations and the effect of changing display order.

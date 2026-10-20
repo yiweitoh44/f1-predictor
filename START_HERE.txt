@@ -330,11 +330,13 @@ with a different input stage or cutoff. Other event/session folders remain.
 
 Saved files:
   predictions.csv        Prediction table.
+  simulation_details.csv Scores, original shares, mean positions, adjacent matchups.
   prediction_inputs.csv  Target evidence scores plus raw diagnostic fields.
   starting_grid.csv      Qualifying position, selected grid and pit-lane status.
   grid_sources.json      Source, publication/capture time, conflicts and fallbacks.
   training.csv           Earlier driver-session training examples.
   backtest.csv           Picks, actual winners, ranking error and top-three hits.
+  backtest_comparisons.csv Per-method checks, eligibility and skipped-test reasons.
   model.json             Native XGBoost component (15% of final score).
   influence_policy.json  Source weights, history window and blend settings.
   session_influence.csv  Per-driver scores and effective source weights.
@@ -345,12 +347,30 @@ Saved files:
   section_rejections.csv  Empty legacy diagnostic exports; section pace disabled.
 
 Current displayed columns:
-  Qualifying/SQ: pole_pct.
-  Race/Sprint: win_pct, podium_pct, mean_simulated_position.
-pole_pct / win_pct count sampled first places; podium_pct counts top-three
-places combined. mean_simulated_position is the average sampled rank.
-The table is sorted by first-place share, not a guaranteed finishing order.
-These are experimental simulation shares, not calibrated probabilities.
+  Qualifying/SQ: Position, Driver, Team, Pole share.
+  Race/Sprint: Position, Driver, Team, Mean position, Close call.
+All four tables sort by mean simulated position, then model score, then driver
+code for an exact tie. Position is the resulting 1..N ordering; mean position
+is the average sampled rank. A predicted P1 can have a mean position of 3.23:
+that driver has the lowest average in a simulation with substantial uncertainty.
+Pole share is the percentage of simulations in which that driver finishes first.
+
+A close call appears only on the lower driver's row, comparing that driver to
+the one immediately above. For example, "↑ Hamilton beats Antonelli in 49.8%
+of simulations" means HAMILTON finishes ahead in 49.8% of the existing draws.
+The arrow becomes ^ on terminals that cannot encode it. No extra simulations
+are drawn. The fixed 45%-55% display band marks near-even matchups throughout
+the field; it is not a validated real-world confidence threshold. A lower mean
+rank and a pairwise share slightly over 50% can coexist in a finite sample.
+Mean positions print to two decimals, shares to one; CSVs retain full precision.
+
+predictions.csv now contains predicted_position, driver (code), name, team,
+and either mean_position/close_call (Race/Sprint) or pole_pct (Q/SQ).
+Scripts reading the previous CSV need to update their column references.
+simulation_details.csv retains first_pct (old win_pct or pole_pct), top3_pct
+(old podium_pct), mean_position (old mean_simulated_position), score, and the
+adjacent comparison driver/share. A blank top-row comparison is intentional.
+Percentages are experimental simulation shares, not calibrated probabilities.
 
 HOW IT LEARNS AND CURRENT LIMITS
 Q and SQ share a training family; Race and Sprint share another.
@@ -371,6 +391,30 @@ set the shared simulation noise; expanding the report does not change it.
 The final model trains on all usable earlier examples, then samples rankings.
 There is no lap-by-lap race simulation or additional retirement lottery.
 
+Simple comparisons print HERE, beside the existing backtest report, before the
+prediction table. Race/Sprint compares Model, Starting grid and Qualifying order.
+Q/SQ compares Model with History only: the target's eventual Q/SQ results are
+not an available pre-session baseline. History only uses the existing combined
+driver/team/related-circuit historical score, without current-weekend evidence.
+
+The comparison table uses the SAME eligible weekends and classified drivers for
+every method. Missing baseline positions exclude that weekend from every method
+in that table, while the usual model-only 5/8-style report still covers its full
+latest eight eligible tests. CSVs record each method's eligibility and reason.
+Historical grids come from FastF1's recorded grid field, available only at an
+input stage with qualifying present. Zero, missing or duplicate slots are not
+filled using qualifying. These historical records may include later revisions;
+this is not a claim of original as-of grid snapshots. Qualifying order likewise
+requires every evaluated driver's qualifying position. Before qualifying, the
+race comparison can therefore be unavailable even if the model can predict.
+
+Backtest model order remains raw-score order, which is expected mean-rank order
+under the shared simulation noise. Its existing metrics and uncertainty remain
+unchanged. Displayed means estimate that order from finite simulation draws;
+nearly tied drivers can swap. Ranking error gives tied scores their average
+occupied rank; driver code resolves ties for a single winner/top-three pick.
+Validation only reports performance; it does not automatically tune weights.
+
 The score is 85% explicit weighted evidence and 15% learned adjustment.
 Competition gets more influence than practice when available. Missing sources
 redistribute the weights; before current sessions exist, history supplies the
@@ -381,8 +425,8 @@ Race/Sprint use seven learned inputs, including separate Q/SQ performance;
 Q/SQ use the original six. Grid and Q/SQ share the existing grid budget equally
 when both are available. No circuit-dependent recovery weight is active.
 No active weather forecast or quantified upgrade effect exists.
-An external chronological comparison includes grid/history-only benchmarks;
-there is no probability calibration or built-in benchmark display yet.
+Simple comparisons are now included in the backtest display. There is no
+probability calibration or automatic selection of the best-looking method.
 Eight backtests alone do not establish reliable prediction accuracy.
 
 SOURCE WEIGHTS AND MODEL INPUTS
@@ -458,13 +502,58 @@ FastF1:
   https://docs.fastf1.dev/
 Attribution does not itself establish permission to redistribute copied code.
 
-CURRENT VALIDATION: 19 OCTOBER 2026
-124 checks passed in the authoritative external test_circuit_profiles_final.py:
+CURRENT VALIDATION: 20 OCTOBER 2026 (SINGAPORE TIME)
+142 checks passed in the authoritative external test_circuit_profiles_final.py:
   python ../test_circuit_profiles_final.py .
 This command requires that file in the parent folder. The test file is kept
 outside Git as requested; a fresh clone does not include it. Tests cover source
 cutoffs/identity/conflicts, grids/pit starts, caches, history, qualifying split,
-every fit's section exclusion, native monotonicity and saved-model reproduction.
+every fit's section exclusion, native monotonicity, saved-model reproduction,
+unchanged simulation draws, close-call direction, output order and fair comparisons.
+
+Sixteen production replays passed: all 13 eligible GPs (rounds 5-17), plus
+Singapore Q/SQ/Sprint. Native model files were byte-identical to the merged
+baseline; model input CSVs, old training columns, existing backtest CSVs,
+uncertainty and first/top-three simulation shares were unchanged. The added
+training column benchmark_grid_position is diagnostic only. Section pace stays off.
+
+Across all 13 GPs, using published pre-cutoff FIA grids for the grid baseline:
+Method                         Average places out  Winner picks  Podium drivers
+Model, new mean-position order       3.259             8/13          25/39
+Starting-grid order                  3.510             8/13          24/39
+Model, previous win-share display    3.238             8/13          25/39
+The new model display beats grid order in 7 races, ties in 3 and loses in 3.
+Compared with the old display, it improves 3, ties 5 and worsens 5; the 0.021
+overall increase is an ordering effect, not a change in model predictions.
+All GP first-place picks and podium sets were retained. Pit-lane starters share
+the back-of-field ranks in the grid benchmark because their exit order is unknown.
+
+Madrid lacks qualifying positions for Stroll and Bearman. Across the SAME
+12 complete qualifying comparisons (excluding Madrid):
+Method                         Average places out  Winner picks  Podium drivers
+Model, new mean-position order       3.348             8/12          22/36
+Qualifying order                     3.409             8/12          20/36
+Do not compare that 12-race mean directly with the 13-race grid table.
+
+Singapore's retained routine report is 5/8, 3.125 places out, 16/24 podium drivers.
+Its fair grid/Q comparison uses seven of those eight tests, since Madrid's Q
+order is incomplete: Model 5/7, 13/21, 3.260; grid 5/7, 13/21, 3.597;
+Q order 5/7, 12/21, 3.312. The actual Singapore prediction's ranking error is
+2.000 with mean ordering (previous display 1.909), versus grid 3.000 and Q 2.455.
+Its predicted first three remain Verstappen, Leclerc, Antonelli.
+
+Other modes remain limited: Singapore Q backtests are 4/8 and 2.009 places out,
+versus history-only 1/8 and 2.261. SQ is still 0/4, about 1.916 places out.
+On the three common recent Sprint tests, grid picks 2/3 winners versus the
+model's 0/3 and has lower rank error (1.576 versus 1.697). These small samples
+do not justify automatically switching the model; the weakness is visible.
+
+The first four GPs still lack the required earlier training weekends. Replays
+used existing caches and current published historical revisions, not newly
+downloaded timing or untouched future events. These are descriptive comparisons,
+not evidence of calibrated probabilities or a statistically proven advantage.
+
+EARLIER GRID-SPLIT CHECKPOINT: 19 OCTOBER 2026 (124 TESTS)
 
 Dated FIA documents covered all 17 GP and 6 Sprint grids through Singapore,
 with all 22 drivers. F1/OpenF1 endpoints were also checked; undated responses
@@ -520,7 +609,7 @@ GP podium overlap improved 11/24 to 16/24. Grid alone scored GP error 3.42 and
 alone 1.45 and 0/2, better rank error than the selected SQ policy. No retuning on
 those outcomes was performed. Sprint/SQ samples are particularly small.
 The report expanded to eight tests while uncertainty retained four. That
-checkpoint passed 96 checks; today's 124-check result supersedes that count.
+checkpoint passed 96 checks; today's 142-check result supersedes that count.
 
 2024-2026 CIRCUIT-CATEGORY CHECK
 Published qualifying/GP results covered 24 weekends in 2024, 24 in 2025 and 17
@@ -567,8 +656,9 @@ session/grid changes and are not the latest prediction. The Hadjar-first output
 used incomplete data and is not a valid comparison for category accuracy.
 
 REMAINING SCOPE AND EXTERNAL FILES
-Weather forecasts/upgrades, clearer output and probability calibration are
-future work. Detailed overtaking, traffic, strategy and live-session updates
+Weather forecasts/upgrades were left on a separate unmerged branch; their tested
+weight changes did not improve results. Probability calibration remains future
+work. Detailed overtaking, traffic, strategy and live-session updates
 are deferred. The DNF-cause adjustment was discarded; early-season fallback is
 also deferred. Section telemetry remains disabled pending validated corrections.
 Raw API responses, caches, ZIPs, telemetry samples, analysis scripts, full driver
