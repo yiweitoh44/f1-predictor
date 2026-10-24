@@ -36,6 +36,10 @@ session weights, grid sources, validation results and remaining limits. Manual c
 categories and tyre-aware pace comparisons are implemented; section telemetry
 remains disabled.
 
+New timing downloads require FastF1 3.9+ and F1TV Access or higher after F1's
+October 2026 authentication change. Install requirements, then run
+`python -m fastf1 auth f1tv --authenticate` locally before predicting.
+
 Published grids are now selected from dated FIA documents, with F1/OpenF1 and
 qualifying-order fallbacks. Pit-lane starts are identified separately.
 Race/Sprint scoring keeps qualifying performance separate from the starting
