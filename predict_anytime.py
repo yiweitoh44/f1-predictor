@@ -3,7 +3,7 @@ Run: python predict_anytime.py --race Singapore --session race
 Requires the existing requirements.txt. No OpenAI API or LLM is used.
 Uses a new training pipeline; it does not reproduce the original GitHub model.
 
-SETUP: Keep session_influence.py, circuit_sections.py, grid_sources.py, tracks.csv and
+SETUP: Keep session_influence.py, circuit_sections.py, grid_sources.py, openf1_data.py, tracks.csv and
 requirements.txt beside this file. See START_HERE.txt for setup and scoring.
 Select --session race, qualifying, sprint or sprint-qualifying. Rerun the same
 command after another session's data becomes available. This predicts an
@@ -70,6 +70,7 @@ import numpy as np
 import pandas as pd
 import session_influence as influence
 import grid_sources
+import openf1_data
 from circuit_sections import (GROUP_COLUMNS, GROUP_WEIGHTS, circuit_group_match,
                               historical_section_features)
 
@@ -77,7 +78,7 @@ ROOT = Path(__file__).resolve().parent
 DATA_ROOT = Path.home() / "F1Data"
 CACHE_ROOT = DATA_ROOT / "cache"
 OUTPUT_ROOT = DATA_ROOT / "outputs"
-SUMMARY_SCHEMA = 5
+SUMMARY_SCHEMA = 6
 BACKTEST_WEEKENDS = 8
 UNCERTAINTY_WEEKENDS = 4
 CLOSE_CALL_MIN_PCT = 45.0
@@ -388,214 +389,9 @@ def race_session_context(results, raw_laps):
 
     return output
 
-def summarize(session, code):
-    from fastf1.exceptions import DataNotLoadedError
-
-    # FastF1 uses pandas subclasses. Convert to ordinary frames before validation.
-    results = pd.DataFrame(session.results).copy()
-    if results.empty or "Abbreviation" not in results:
-        raise ValueError("no driver results/roster published")
-    results = results[results.Abbreviation.notna()].copy()
-    results["Abbreviation"] = results.Abbreviation.astype(str).str.strip()
-    results = results[results.Abbreviation != ""]
-    if results.Abbreviation.duplicated().any() or len(results) < 2:
-        raise ValueError("driver roster is incomplete or ambiguous")
-    n = len(results)
-    pos = pd.to_numeric(results.get("Position", pd.Series(np.nan, index=results.index)), errors="coerce").astype(float)
-    invalid = (~np.isfinite(pos)) | (pos < 1) | (pos > n) | (pos % 1 != 0)
-    pos = pos.mask(invalid)
-    pos = pos.mask(pos.duplicated(keep=False) & pos.notna())
-    results["Position"] = pos
-    lap_data_loaded = True
-    try:
-        raw_laps = pd.DataFrame(session.laps).copy()
-    except DataNotLoadedError:
-        # A classified old competitive session can still inform results/form.
-        # Missing timing supplies no pace evidence and cannot validate practice.
-        raw_laps = pd.DataFrame()
-        lap_data_loaded = False
-    laps = raw_laps.copy()
-    best, lap_counts = {}, {}
-    if not laps.empty and {"Driver", "LapTime"}.issubset(laps.columns):
-        laps = laps.dropna(subset=["Driver", "LapTime"])
-        for col in ("PitInTime", "PitOutTime"):
-            if col in laps:
-                laps = laps[laps[col].isna()]
-
-        required_quality = {"IsAccurate", "Deleted", "TrackStatus"}
-
-        if required_quality.issubset(laps.columns):
-            laps = laps[
-                laps.IsAccurate.eq(True)
-                & laps.Deleted.eq(False)
-                & laps.TrackStatus.astype("string").isin(["1", "1.0"])
-            ].copy()
-        else:
-            # Missing quality information is not proof of a valid pace lap.
-            laps = laps.iloc[0:0].copy()
-        seconds = pd.to_timedelta(laps.LapTime).dt.total_seconds()
-        laps = laps.assign(lap_seconds=seconds)
-        laps = laps[np.isfinite(laps.lap_seconds) & (laps.lap_seconds > 0)]
-        best = laps.groupby("Driver").lap_seconds.min().to_dict()
-        lap_counts = laps.groupby("Driver").size().to_dict()
-    fastest = min(best.values()) if best else np.nan
-    pace = tyre_pace_summary(laps, code)
-    section_analysis = {"status": "disabled: manual circuit categories only",
-                        "profile": [], "drivers": {}}
-    context = (
-        race_session_context(results, raw_laps)
-        if code in RACE_TYPES else {}
-    )
-    if code.startswith("FP") and not best:
-        raise ValueError("no usable practice laps published")
-    if code in {"Q", "SQ", "S", "R"} and pos.notna().sum() < max(2, n // 2):
-        raise ValueError("too few valid classified positions published")
-    drivers = []
-    for row in results.to_dict("records"):
-        driver = row["Abbreviation"]
-        lap = number(best.get(driver))
-        position = number(row.get("Position"))
-        drivers.append({"driver": driver,
-                        "name": str(row.get("FullName") or driver),
-                        "team": str(row.get("TeamName") or "Unknown"),
-                        "position": position,
-                        "position_norm": (position - 1) / max(1, n - 1),
-                        "grid": number(row.get("GridPosition")),
-                        "gap_pct": 100 * (lap / fastest - 1) if np.isfinite(lap) and np.isfinite(fastest) else np.nan,
-                        "laps": float(lap_counts.get(driver, 0)) if lap_data_loaded else np.nan,
-                        "sections": section_analysis.get("drivers", {}).get(driver, []),
-                        **pace.get(driver, {}),
-                        **context.get(driver, {})})
-    try:
-        weather = pd.DataFrame(session.weather_data)
-    except Exception:
-        weather = pd.DataFrame()
-    observed = {}
-    for column in ("AirTemp", "TrackTemp", "Rainfall"):
-        values = pd.to_numeric(weather[column], errors="coerce").dropna() if column in weather else pd.Series(dtype=float)
-        observed[column] = float(values.max() if column == "Rainfall" else values.median()) if len(values) else np.nan
-    # Driver evidence is already attached above; avoid duplicating it in JSON.
-    section_analysis = {k: v for k, v in section_analysis.items() if k != "drivers"}
-    return {"code": code, "drivers": drivers, "weather": observed,
-            "lap_data_loaded": lap_data_loaded,
-            "pace_summary_version": 2,
-            "section_analysis": section_analysis}
-
-
-def completed_session_time(session, start, cutoff):
-    """Use published finalisation, or the existing conservative past-day rule.
-
-    FastF1 raises when a channel was not loaded; that must not prevent the
-    explicit fallback from being evaluated. Classifications are validated by
-    summarize before any such competitive session is retained.
-    """
-    from fastf1.exceptions import DataNotLoadedError
-
-    try:
-        statuses = pd.DataFrame(session.session_status)
-    except DataNotLoadedError:
-        statuses = pd.DataFrame()
-    completed = pd.NaT
-    if {"Status", "Time"}.issubset(statuses.columns):
-        final = statuses[statuses.Status.astype(str).str.casefold().isin(["finalised", "finalized"])]
-        if not final.empty and pd.notna(session.t0_date):
-            completed = pd.to_datetime(session.t0_date, utc=True) + pd.to_timedelta(final.Time.iloc[-1])
-    if pd.isna(completed):
-        if cutoff < start + pd.Timedelta(days=1):
-            raise ValueError("session not confirmed finalised yet")
-        completed = start + pd.Timedelta(days=1)
-    return completed
-
-
-class Store:
+class Store(openf1_data.Store):
     def __init__(self, year, now, refresh=False, offline=False, rebuild_summaries=False):
-        self.year, self.now, self.refresh, self.offline = year, now, refresh, offline
-        self.rebuild_summaries = rebuild_summaries
-        self.folder = CACHE_ROOT / f"anytime_v{SUMMARY_SCHEMA}_sections" / str(year)
-        self.memory = {}
-        self.unavailable = []
-
-    def get(self, event, code):
-        rnd = int(event["RoundNumber"])
-        key = (rnd, code)
-        if key in self.memory:
-            return self.memory[key]
-        start = dict(session_schedule(event)).get(code)
-        # Never fetch a session that has not started as of this prediction cutoff.
-        if start is None or pd.isna(start) or start >= self.now:
-            return None
-        path = self.folder / f"{rnd:02d}_{code}.json"
-        saved_data = None
-        if not self.refresh:
-            legacy = CACHE_ROOT / "anytime_v4_sections" / str(self.year) / path.name
-            for candidate, schema in ((path, SUMMARY_SCHEMA), (legacy, 4)):
-                if not candidate.exists():
-                    continue
-                try:
-                    saved = json.loads(candidate.read_text(encoding="utf-8"))
-                    end = pd.to_datetime(saved.get("completed_utc"), utc=True, errors="coerce")
-                    data = saved["data"]
-                    if (saved.get("schema") != schema or saved.get("event") != event["EventName"]
-                            or pd.isna(end) or not start <= end < self.now or data.get("code") != code):
-                        continue
-                    if schema == 4:
-                        drivers = data.get("drivers", [])
-                        names = [d.get("driver") for d in drivers]
-                        if (len(names) < 2 or not all(names) or len(set(names)) != len(names)
-                                or any(np.isfinite(number(d.get('position_norm')))
-                                       and not 0 <= number(d['position_norm']) <= 1 for d in drivers)):
-                            continue
-                        # Reuse non-section observations; never rewrite the old cache
-                        # or imply that its telemetry/raw laps were revalidated.
-                        data = {**data, "drivers": [{**d, "sections": []} for d in drivers],
-                                "section_analysis": {"enabled": False, "status": "disabled; legacy evidence omitted"},
-                                "lap_data_loaded": data.get("lap_data_loaded", any(number(d.get('laps')) > 0 for d in drivers)),
-                                "source_summary_schema": 4, "raw_cache_revalidated": False}
-                        print(f"  R{rnd} {code}: reusing legacy v4 summary; section evidence ignored.")
-                    saved_data = data
-                    break
-                except (ValueError, TypeError, KeyError, AttributeError) as exc:
-                    print(f"  R{rnd} {code}: ignoring invalid cached summary ({type(exc).__name__}).")
-            if saved_data is not None and not self.rebuild_summaries:
-                self.memory[key] = saved_data
-                return saved_data
-        import fastf1
-        try:
-            # Reuse raw data normally; replay clocks must not force downloads.
-            fastf1.Cache.enable_cache(str(CACHE_ROOT / "fastf1"),
-                                     force_renew=self.refresh)
-            if self.offline:
-                fastf1.Cache.offline_mode(True)
-            print(f"  Building session summary R{rnd} {code}", flush=True)
-            session = fastf1.get_session(self.year, rnd, code)
-            session.load(laps=True, telemetry=False, weather=True, messages=True)
-            completed = completed_session_time(session, start, self.now)
-            if completed >= self.now:
-                self.unavailable.append({"round": rnd, "session": code,
-                                         "reason": "completion is not before cutoff"})
-                return None
-            data = summarize(session, code)
-            if not data["lap_data_loaded"]:
-                if self.rebuild_summaries and saved_data and saved_data.get('lap_data_loaded'):
-                    raise ValueError('raw timing unavailable for summary rebuild; retain previous completed summary')
-                print(f"  R{rnd} {code}: classifications only; lap timing/pace unavailable.")
-        except Exception as exc:
-            print(f"  R{rnd} {code} unavailable: {type(exc).__name__}: {str(exc)[:130]}")
-            self.unavailable.append({"round": rnd, "session": code,
-                                     "reason": type(exc).__name__ + ": " + str(exc)})
-            if self.rebuild_summaries and saved_data is not None and not self.refresh:
-                print(f"  R{rnd} {code}: retained prior completed summary; pace was not rebuilt.")
-                self.memory[key] = saved_data
-                return saved_data
-            self.memory[key] = None
-            return None
-        self.folder.mkdir(parents=True, exist_ok=True)
-        payload = {"schema": SUMMARY_SCHEMA, "event": event["EventName"], "completed_utc": completed.isoformat(), "data": data}
-        temp = path.with_suffix(".tmp")
-        temp.write_text(json.dumps(json_safe(payload)), encoding="utf-8")
-        temp.replace(path)
-        self.memory[key] = json_safe(data)
-        return self.memory[key]
+        super().__init__(openf1_data.Client(CACHE_ROOT, offline, refresh), year, now, tyre_pace_summary)
 
 
 def circuit_similarity(a, b):
@@ -1012,18 +808,12 @@ def print_prediction_table(output):
 
 
 def run(args):
-    import fastf1
     now = pd.Timestamp.now(tz="UTC")
     if args.as_of:
         now = pd.to_datetime(args.as_of, utc=True, errors="raise")
         if now > pd.Timestamp.now(tz="UTC"):
             raise ValueError("--as-of cannot be in the future.")
-    cache = CACHE_ROOT / "fastf1"
-    cache.mkdir(parents=True, exist_ok=True)
-    fastf1.Cache.enable_cache(str(cache), force_renew=args.refresh)
-    fastf1.Cache.offline_mode(args.offline)
-    fastf1.set_log_level("ERROR")
-    schedule = pd.DataFrame(fastf1.get_event_schedule(args.year, include_testing=False))
+    schedule = openf1_data.Client(CACHE_ROOT, args.offline, args.refresh).schedule(args.year)
     schedule = schedule[schedule.RoundNumber > 0].sort_values("RoundNumber")
     if args.list_races:
         print(schedule[["RoundNumber", "EventName", "Location"]].to_string(index=False))
@@ -1066,6 +856,9 @@ def run(args):
             current[code] = data
     print("This weekend's inputs: " + (", ".join(current) if current else "none; using earlier performance only"))
     for code, data in current.items():
+        audit = data.get('lap_quality_audit', [])
+        if audit:
+            print(f"  {code} OpenF1 derived lap quality: {sum(r['accepted'] for r in audit)}/{len(audit)} accepted ({data.get('quality_policy')}).")
         if code.startswith("FP") or code == "S":
             short = sum(
                 number(d.get("short_matched_laps", 0)) > 0
@@ -1209,6 +1002,10 @@ def run(args):
     output, simulation_details = prediction_tables(drivers, scores, win, top3, average, positions, target)
     folder = OUTPUT_ROOT / f"{args.year}_{int(event['RoundNumber']):02d}_{args.session}" / "latest"
     folder.mkdir(parents=True, exist_ok=True)
+    quality_rows = [dict(session=code, policy=data.get('quality_policy'), **row)
+                    for code, data in current.items() for row in data.get('lap_quality_audit', [])]
+    pd.DataFrame(quality_rows, columns=['session','policy','driver','lap_number','accepted','quality_state','reason']).to_csv(
+        folder / 'lap_quality.csv', index=False)
     output.to_csv(folder / "predictions.csv", index=False)
     simulation_details.to_csv(folder / 'simulation_details.csv', index=False)
     frame.to_csv(folder / "training.csv", index=False)
@@ -1296,7 +1093,7 @@ def run(args):
                 "validation_comparison": {
                     "common_rounds": comparison_summary(comparisons, target)[0],
                     "model_order": "score order (expected mean-position order under shared simulation noise)",
-                    "grid_basis": "historical FastF1 grid when qualifying is available; current published revisions; no qualifying fallback for a missing benchmark grid",
+                    "grid_basis": "historical OpenF1 grid when qualifying is available; current published revisions; no qualifying fallback for a missing benchmark grid",
                     "missing_baseline": "exclude the weekend from every method in the comparison table; retain full model backtest report",
                     "ties": "mean ranks for ranking error; driver code breaks tied first/podium picks"},
                 "output_policy": {
@@ -1314,6 +1111,8 @@ def run(args):
                 "circuit_history_window_rounds": influence.HISTORY_WEEKENDS,
                 "offline": args.offline,
                 "summary_schema": SUMMARY_SCHEMA,
+                "data_provider": "OpenF1; no FastF1 runtime or timing-cache dependency",
+                "lap_quality": "derived OpenF1 checks, not an official IsAccurate flag; see lap_quality.csv",
                 "unavailable_sessions": store.unavailable,
                 "session_data_coverage": session_coverage,
                 "data_coverage": coverage,
@@ -1341,10 +1140,10 @@ def main():
     parser.add_argument("--grid", type=Path, help="Optional full driver,grid CSV after qualifying, for grid penalties")
     parser.add_argument("--grid-source", choices=['auto', 'qualifying'], default='auto',
                         help="Auto: dated FIA/F1/OpenF1 grids; qualifying: explicitly use Q/SQ order")
-    parser.add_argument("--refresh", action="store_true", help="Refresh FastF1 and local summary caches")
+    parser.add_argument("--refresh", action="store_true", help="Refresh OpenF1 and local summary caches")
     parser.add_argument("--rebuild-summaries", action="store_true",
-                        help="Recalculate compact summaries, reusing raw FastF1 caches; combine with --offline to forbid downloads")
-    parser.add_argument("--offline", action="store_true", help="Use cached FastF1 data only; do not make network requests")
+                        help="Recalculate compact summaries, reusing raw OpenF1 caches; combine with --offline to forbid downloads")
+    parser.add_argument("--offline", action="store_true", help="Use cached OpenF1 data only; do not make network requests")
     parser.add_argument("--as-of", help="Historical replay cutoff, e.g. 2026-09-25T06:00:00Z")
     parser.add_argument("--simulations", type=int, default=25_000)
     parser.add_argument("--air-temp", type=float, help="Record temperature scenario in Celsius; diagnostic only, no score effect")

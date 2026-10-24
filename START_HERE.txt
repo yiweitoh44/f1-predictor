@@ -1,667 +1,195 @@
-F1 PREDICTOR: SETUP AND USE
-Current baseline for predict_anytime.py
+F1 PREDICTOR — OPENF1 DATA VERSION
 
 SETUP
-Keep predict_anytime.py, session_influence.py, circuit_sections.py, grid_sources.py, tracks.csv
-and requirements.txt together. This guide covers setup, scoring and validation.
-Run only predict_anytime.py. The other Python files are imported helpers:
-  session_influence.py  Session/history scores and qualifying/grid split.
-  grid_sources.py       Published grids, source checks and pit-lane status.
-  circuit_sections.py   Circuit categories and deferred section helpers.
-Open the Git repository folder in VS Code and run commands there.
-For a new environment, or after pulling the grid-sources update:
+Keep predict_anytime.py, openf1_data.py, session_influence.py, grid_sources.py,
+circuit_sections.py, tracks.csv and requirements.txt together. Run only
+predict_anytime.py; the others are imported helpers.
+
   python -m pip install -r requirements.txt
-Check installed-package dependencies:
   python -m pip check
-This checks dependencies, not whether Windows permits every compiled module.
-The current script uses native XGBoost training, rather than XGBRegressor.
-No OpenAI API key, LLM or GPU is required.
 
-QUICK COMMANDS
-Help (no race-data download):
-  python predict_anytime.py --help
-List events (internet required):
+No FastF1 installation, F1 account, F1TV subscription, OpenAI key or GPU is
+required. An existing FastF1 installation does not need to be uninstalled.
+OpenF1's public completed-session data is used; its paid live service is not.
+Keep old caches and uploaded archives: they are not read by this data version
+and can remain available for v3 research.
+
+COMMANDS
   python predict_anytime.py --year 2026 --list-races
-Predict the Grand Prix:
-  python predict_anytime.py --year 2026 --race Singapore --session race
-Predict normal qualifying:
-  python predict_anytime.py --year 2026 --race Singapore --session qualifying
-Predict Sprint Qualifying, if scheduled:
-  python predict_anytime.py --year 2026 --race Singapore --session sprint-qualifying
-Predict the Sprint, if scheduled:
-  python predict_anytime.py --year 2026 --race Singapore --session sprint
-
-Replace Singapore with a location, country, event name or round number.
-Quote names containing spaces. Ambiguous names are rejected.
-Run before the selected session starts. Rerun after another earlier session
-finishes and its data becomes available to update the prediction inputs.
-Before current-weekend data exists, the script uses historical performance
-and supplied circuit features. At least four usable training weekends in the
-selected season are needed, with an eligible backtest of the requested type.
-
-ALREADY-STARTED EVENTS
-After the target's scheduled start, the script asks whether to continue.
-Enter y or yes to use a cutoff one second before its scheduled start.
-Enter or any other answer cancels.
-
-Only earlier sessions completed before that cutoff are eligible.
-The script lists the sessions it actually loaded. Live status is not
-checked, and target-session laps or results are not prediction inputs.
-
-You can also provide an explicit historical cutoff:
-  python predict_anytime.py --year 2026 --race Singapore --session race --as-of "2026-10-11T11:59:00Z"
-For another event, use its own verified pre-session cutoff.
-
-Replay uses current published records, including later corrections,
-rather than archived records of what was available at the original time.
-
-ALL FLAGS
--h, --help           Show help and exit.
---year 2026          Season. Default: 2026.
---race Singapore     Event selector; required unless using --list-races.
---session race       race | qualifying | sprint | sprint-qualifying.
-                     Default: race.
---list-races         List season events and exit.
---tracks tracks.csv  Circuit CSV; defaults to tracks.csv beside the script.
---roster roster.csv  Driver/team entries: driver,team; name is optional.
---grid grid.csv      Complete driver,grid CSV for a Race/Sprint, after its
-                     corresponding qualifying data has loaded. Use PIT for pit-lane starts.
---grid-source auto   Prefer eligible published grids (default).
-                     Use qualifying to explicitly retain Q/SQ order.
---refresh            Refresh FastF1 session caches and rebuild summaries.
---rebuild-summaries  Recalculate summaries while reusing raw FastF1 caches.
-                     Add --offline to forbid downloads. If rebuilding fails,
-                     retain an existing valid completed summary and report it.
---offline            Use cached FastF1 data only; make no network requests.
-                     Cannot be combined with --refresh. Missing data stays missing.
---as-of UTC_TIME     Past replay cutoff before the target's scheduled start.
-                     Example format: 2026-10-11T11:59:00Z. Z means UTC.
---simulations 25000  Sampled rankings. Default: 25000; range: 100 to 1000000.
---air-temp 30        Record air-temperature scenario, degrees Celsius.
---wet 0              Record weather scenario: 0 = dry; 1 = wet.
-                     Both are diagnostic only in this version; neither changes
-                     the score. Active weather effects belong to weather-context.
-
-EXAMPLES
-Refresh corrected results, before the target starts:
-  python predict_anytime.py --year 2026 --race Singapore --session race --refresh
-Record a wet, 30 C scenario (does not change this version's prediction):
-  python predict_anytime.py --year 2026 --race Singapore --session race --air-temp 30 --wet 1
-Apply a manually verified grid after qualifying:
-  python predict_anytime.py --year 2026 --race Singapore --session race --grid grid.csv
-For an already-started target, confirm the automatic pre-session replay prompt or supply a suitable --as-of cutoff.
-Flags can be combined. Supplied relative paths use the terminal folder;
-quote paths containing spaces. The default tracks.csv uses the script folder.
-For a cached replay during network failures, add --offline to the command.
-The season schedule must also be cached. This does not download missing data.
-
-ROSTER AND GRID
-Without --roster, use the latest loaded current-weekend roster, or the most
-recent earlier competitive roster. Check replacements and FP reserve drivers.
-After qualifying, published grids are selected automatically: dated FIA grid
-first, then eligible Formula1.com/OpenF1 snapshots. Qualifying order is the
-fallback. The terminal identifies the source. Source timing and conflicts are
-explained below.
-Use --grid-source qualifying to explicitly keep the Q/SQ-order assumption.
-grid.csv must list every roster driver once, using abbreviations such as VER.
-Use a unique grid slot, or PIT for a pit-lane starter; vacant slots are allowed.
-Pit-lane starters are identified separately and share a back-of-field score;
-exit order, delay and detailed recovery are not modelled.
-Race/Sprint retain Q/SQ performance separately: the existing grid evidence
-budget is shared equally between actual starting position and Q/SQ position.
-This allows basic recovery estimates; it is not a lap-by-lap recovery model.
-
-GRID SOURCES, TIMING AND MANUAL FILES
-Source preference: complete manual --grid override, dated FIA documents,
-eligible Formula1.com grid, eligible OpenF1 grid, then Q/SQ-order fallback.
-Candidates must match the event/session and contain every entered driver once.
-Malformed/incomplete grids are rejected rather than combined into a partial
-guess. GP and Sprint grids are separate. Conflicts are recorded and the
-higher-priority source wins. Recalled FIA documents are excluded. The latest
-usable revision before cutoff is preferred; an older complete provisional can
-be selected if a later document fails validation. Check the selected title.
-
-FIA publication times use Europe/Paris, including its seasonal UTC offset,
-although the website labels them CET all year. PDF issue times use the event's
-local offset from the FastF1 schedule. The later time is used; disagreement
-over two hours rejects the document. Year, session and date proximity are checked.
-F1/OpenF1 records lack publication times, so retrieval time is the earliest
-availability this application can establish. A grid first observed today is
-not silently admitted into last week's replay. An ordinary prediction before
-the target starts can use a grid fetched during that request; an explicit
-historical cutoff cannot admit a later observation.
-
-These are current copies of dated historical documents, not proof that the
-same bytes were archived at their original issue time. Later corrections and
-source availability remain limits of retrospective validation.
-
-OpenF1 starting_grid records belong to the corresponding Q/SQ session key.
-The adapter matches year, location, session name and scheduled time, then maps
-numbers through that entry list. It does not query target results or running
-order. OpenF1 pit-lane status is unknown; FIA's explicit pit-lane section and
-recognised F1 notes can identify it. Unknown wording rejects that source.
-
-F1Data/cache/grids holds raw responses and immutable parsed grid revisions.
-Online responses refresh after five minutes; --refresh renews immediately.
---offline downloads nothing. Failed downloads can reuse cached responses only
-under the same source identity and cutoff checks. Corrupt data is unavailable.
-
-Manual grid.csv requires driver,grid and the whole entered field, for example:
-  driver,grid
-  VER,1
-  LEC,2
-  RUS,19
-  ALO,PIT
-This is an excerpt, not a complete usable file. Use unique numbered slots or
-PIT; PL and PIT LANE are also accepted. Vacant slots are allowed. Optional
-pit_lane true/false is accepted; true requires PIT, an empty slot or zero.
-Optional known_utc values need an explicit UTC offset and must precede cutoff.
-Without timestamps, the file is the user's assertion of the pre-session grid.
---grid is available only for Race/Sprint after corresponding qualifying loads.
---grid-source qualifying selects Q/SQ as the grid source; it does not restore
-the older six-input race model or undo the adopted qualifying/grid score split.
-
-Source references:
-  https://www.fia.com/documents
-  https://www.formula1.com/en/results/2026/races
-  https://openf1.org/docs/#starting-grid
-
-TRACKS AND WEATHER
-tracks.csv is manual. location must match Location from --list-races exactly.
-Recognised numeric columns:
-  grid_stickiness        0..1 assumption; not a probability or fixed weight.
-  length_km              Positive circuit length in km.
-  longest_straight_km    Positive longest-straight length in km.
-  slow_corner_fraction  0..1, using a consistent definition across circuits.
-  high_speed_fraction   0..1, using a consistent definition across circuits.
-  street                0..1; normally 1 for street and 0 for permanent.
-basis is an explanatory note; the model does not use it.
-Similar-track form requires at least two matching, nonmissing geometry/type
-columns on the target and historical circuits. grid_stickiness does not count.
-The current CSV enables manual category matching below; the separate numeric
-geometry comparison needs these additional numeric fields.
-Leave unknown values blank. Match the circuit layout used for the event.
-Unsupported columns are ignored; adding them does not add model features.
-
-Weather comes from completed sessions: median air/track temperatures and
-whether rain was reported, using the latest available observations per field.
-There is no forecast API. With no observations, weather stays missing unless
-overridden. Weather and numeric geometry columns remain diagnostic fields;
-only the evidence scores listed in HOW IT LEARNS below enter the model:
-six for Q/SQ, seven for Race/Sprint including separate qualifying performance.
-Manual weather scenarios do not change predictions in this version.
-
-PACE AND TYRE ANALYSIS
-Pace calculations exclude pit laps, inaccurate/deleted laps and laps without
-an all-clear track status. Classified finishing positions remain available.
-
-CIRCUIT PROFILES: MANUAL CATEGORIES
-Keep circuit_sections.py beside predict_anytime.py.
-Edit the five *_groups columns in tracks.csv. A | separates overlapping tags;
-for example a circuit can have both slow technical and fast flowing corners.
-All 26 listed circuits have at least one category, including the three added
-for 2024-2025 coverage. Madrid uses the published layout description; its tyre
-demand stays unknown. These are starting assumptions, not measured or official ratings.
-profile_basis explains this; existing source URLs support only the previously
-documented tags, not every added manual category. No tags are driver-specific.
-
-Category comparison weights are GROUP_WEIGHTS in circuit_sections.py:
-  Straights 25%, corners 30%, braking 15%, traction 15%, tyre demands 15%.
-For each category, compare shared tags divided by all distinct tags across
-both circuits, then multiply by its weight. Add the five contributions.
-Blank categories contribute zero. This score measures configured similarity,
-not confidence, accuracy or a driver's winning probability.
-
-Earlier results at matching circuits are averaged separately for each driver
-and their current team. Require at least two earlier matching weekends.
-A Sprint and GP share one weekend's average; teammates share the team's
-weekend average. The existing recency multiplier is 0.85 per elapsed round.
-Only the previous four rounds are eligible now. Related-driver circuit form
-has a 10% share within historical evidence when available; driver recent form
-has 65% and current-team form 25%, redistributing missing components.
-The 25/30/15/15/15 category weights still determine similarity, not final
-winning chances. Team-related circuit form is exported as a diagnostic.
-
-circuit_matches.csv lists prior tracks, their category contributions, raw
-similarity and similarity times recency. historical_weight is zero outside
-the four-round window; within_history_window explains eligibility. A positive
-weight still requires two usable matching weekends for an individual driver.
-run_info.json records the weights and window.
-Weather remains based on session observations/manual overrides; a track's
-usual climate is not substituted for the conditions on a particular weekend.
-
-SECTION PACE IS DISABLED
-Normal runs do not request car/position telemetry or calculate section pace.
-Old section evidence in cached summaries is ignored by the feature builder.
-All *_section_* columns remain excluded from every model fit. run_info.json
-records section_pace_model_inputs=false and section_analysis.enabled=false.
-The experimental helpers remain in circuit_sections.py for possible later
-validation. Their presence does not enable them. Legacy section CSV filenames
-are retained as empty exports for compatibility.
-
-Previous telemetry investigation: a user-supplied Hungary sample reproduced
-unrealistic section gaps. Positions were often stale, and comparisons between
-drivers were not physically validated. No measured prediction improvement or
-accuracy percentage has been established for this technique. Do not enable
-it simply because a result looks plausible.
-
-Summaries remain in F1Data/cache/anytime_v5_sections/<year>. Existing v4 and
-raw FastF1 caches are retained. If no valid v5 summary exists, normal runs
-reuse completed v4 summaries directly, with old section evidence removed in
-memory. Original files are not rewritten; no manual conversion is needed.
-Reusing a summary does not verify its raw timing cache or old telemetry.
-No refresh is required for the category change:
-category weights and profiles are applied when features are built.
-Legacy summaries remain usable with the new extreme-gap guard. To apply the
-new raw-lap filters once, with your laptop's existing raw cache, run:
-  python predict_anytime.py --year 2026 --race Singapore --session race --offline --rebuild-summaries
-For an already-started event, answer y to the usual replay question. This may
-take time because it rebuilds earlier summaries too. It does not force raw
-downloads or erase caches. Failed rebuilds retain prior valid summaries; check
-the messages and pace_summary_version in run_info.json (2 means rebuilt).
-If timing is unavailable, competitive classifications can be retained only
-once the existing conservative session-completion check passes. Missing lap
-data supplies no pace. run_info.json and the terminal report data coverage.
-
-Practice short-run comparisons:
-- Match compound, fresh/used status, tyre-age group and ten-minute window.
-- Use tyres aged 1-5 laps.
-- Take each driver's fastest lap within each matching group, then their
-  median percentage gap across groups.
-- Require at least two drivers per comparison group.
-
-Longer-run comparisons:
-- Require at least four consecutive valid laps within the same stint,
-  compound and fresh/used status. Filtered-out laps break consecutive runs.
-- Older tyres are allowed; there is no five-lap tyre-age limit.
-- Match three-lap tyre-age groups: 1-3, 4-6, 7-9, and so on.
-- Compare within ten-minute practice windows or five-lap race/Sprint windows.
-- Use median lap times, requiring at least two laps per driver and two
-  drivers within each comparison group.
-
-Newly built summaries also omit laps more than 7% slower than that driver's
-fastest valid lap on the same compound, and omit comparison groups whose
-fastest/slowest driver paces differ by more than 7%. Removed laps break runs.
-Before scoring, gaps outside 0..5% are omitted, never clipped to 0 or 5.
-Each compound needs four eligible drivers with at least two matched samples.
-Legacy summaries only have aggregate sample counts; per-compound support
-cannot be established until rebuilt. These guards do not prove equal fuel or
-programmes. Unmatched pace stays missing. No fixed tyre-time correction is
-invented. These grouping thresholds are experimental assumptions.
-
-The net stint pace trend measures whether lap times increase or decrease.
-It does not isolate tyre deterioration from fuel burn or changing conditions.
-
-Sprint evidence combines classified position (80%) and acceptable longer-run
-pace (20%), redistributing missing parts. A known non-finisher or driver below
-75% completed distance supplies no finishing-position pace evidence.
-Finishing gap, completion, grid gains and disruption are also exported; they
-are not separate model inputs.
-Finishing gap is expressed as a percentage of the winner's race duration;
-it is missing for retired/lapped drivers or unavailable timing.
-It is result context, not a direct measurement of underlying race pace.
-
-The model no longer uses raw practice/Sprint fastest-lap gaps as pace inputs.
-Published grids are preferred for Race/Sprint, with Q/SQ order as fallback.
-Qualifying performance also retains its separate share of the grid budget.
-SQ order can inform later qualifying.
-Raw qualifying gaps remain diagnostic rather than separate model inputs.
-
-Matched-pace messages show how many drivers have usable comparisons.
-Sprint short coverage is intentionally zero; Sprint uses longer-run pace.
-
-Fuel correction, traffic filtering, isolated tyre deterioration and refinements
-to the comparison groups are deferred. Tyre-aware matching does not guarantee
-improved prediction accuracy.
-
-OUTPUTS AND CACHE
-On your Windows setup:
-  C:\Users\Yi Wei Toh\F1Data\cache\fastf1
-    Downloaded FastF1 data.
-  C:\Users\Yi Wei Toh\F1Data\cache\anytime_v5_sections\<year>
-    Compact completed-session summaries.
-  C:\Users\Yi Wei Toh\F1Data\outputs\<year>_<round>_<session>\latest
-    Latest outputs for that event and target session.
-On other accounts, F1Data is under that user's home folder.
-
-Each run retrains. Cached completed sessions are reused where possible.
-Rerunning the same event/session overwrites its latest files, including runs
-with a different input stage or cutoff. Other event/session folders remain.
-
-Saved files:
-  predictions.csv        Prediction table.
-  simulation_details.csv Scores, original shares, mean positions, adjacent matchups.
-  prediction_inputs.csv  Target evidence scores plus raw diagnostic fields.
-  starting_grid.csv      Qualifying position, selected grid and pit-lane status.
-  grid_sources.json      Source, publication/capture time, conflicts and fallbacks.
-  training.csv           Earlier driver-session training examples.
-  backtest.csv           Picks, actual winners, ranking error and top-three hits.
-  backtest_comparisons.csv Per-method checks, eligibility and skipped-test reasons.
-  model.json             Native XGBoost component (15% of final score).
-  influence_policy.json  Source weights, history window and blend settings.
-  session_influence.csv  Per-driver scores and effective source weights.
-  pace_rejections.csv    Current-session gaps omitted by the extreme-gap guard.
-  run_info.json          Cutoff, loaded sessions and assumptions.
-  circuit_matches.csv   Manual track similarities and category contributions.
-  target_sections.csv, section_evidence.csv, section_cohorts.csv,
-  section_rejections.csv  Empty legacy diagnostic exports; section pace disabled.
-
-Current displayed columns:
-  Qualifying/SQ: Position, Driver, Team, Pole share.
-  Race/Sprint: Position, Driver, Team, Mean position, Close call.
-All four tables sort by mean simulated position, then model score, then driver
-code for an exact tie. Position is the resulting 1..N ordering; mean position
-is the average sampled rank. A predicted P1 can have a mean position of 3.23:
-that driver has the lowest average in a simulation with substantial uncertainty.
-Pole share is the percentage of simulations in which that driver finishes first.
-
-A close call appears only on the lower driver's row, comparing that driver to
-the one immediately above. For example, "↑ Hamilton beats Antonelli in 49.8%
-of simulations" means HAMILTON finishes ahead in 49.8% of the existing draws.
-The arrow becomes ^ on terminals that cannot encode it. No extra simulations
-are drawn. The fixed 45%-55% display band marks near-even matchups throughout
-the field; it is not a validated real-world confidence threshold. A lower mean
-rank and a pairwise share slightly over 50% can coexist in a finite sample.
-Mean positions print to two decimals, shares to one; CSVs retain full precision.
-
-predictions.csv now contains predicted_position, driver (code), name, team,
-and either mean_position/close_call (Race/Sprint) or pole_pct (Q/SQ).
-Scripts reading the previous CSV need to update their column references.
-simulation_details.csv retains first_pct (old win_pct or pole_pct), top3_pct
-(old podium_pct), mean_position (old mean_simulated_position), score, and the
-adjacent comparison driver/share. A blank top-row comparison is intentional.
-Percentages are experimental simulation shares, not calibrated probabilities.
-
-HOW IT LEARNS AND CURRENT LIMITS
-Q and SQ share a training family; Race and Sprint share another.
-Driver/team form uses the previous four rounds, with weight halved every three
-rounds. One weekend gets one historical budget: GP/Q has three times the vote
-of Sprint/SQ within it. Team form uses the driver's current team and averages
-teammates within each historical session before smoothing.
-Historical examples use session types available at the current input stage,
-subject to each historical weekend's session order and actual availability.
-Current-weekend results enter through session features, not historical form.
-Labels are normalised finishing positions, including retirement-affected ones.
-
-Up to eight eligible recent weekends of the requested type are backtested.
-Fewer are shown when the season has fewer eligible tests (especially S/SQ).
-Each test trains on earlier rounds; the printed fraction counts correct
-first-place picks. Driver score errors from the latest four eligible tests
-set the shared simulation noise; expanding the report does not change it.
-The final model trains on all usable earlier examples, then samples rankings.
-There is no lap-by-lap race simulation or additional retirement lottery.
-
-Simple comparisons print HERE, beside the existing backtest report, before the
-prediction table. Race/Sprint compares Model, Starting grid and Qualifying order.
-Q/SQ compares Model with History only: the target's eventual Q/SQ results are
-not an available pre-session baseline. History only uses the existing combined
-driver/team/related-circuit historical score, without current-weekend evidence.
-
-The comparison table uses the SAME eligible weekends and classified drivers for
-every method. Missing baseline positions exclude that weekend from every method
-in that table, while the usual model-only 5/8-style report still covers its full
-latest eight eligible tests. CSVs record each method's eligibility and reason.
-Historical grids come from FastF1's recorded grid field, available only at an
-input stage with qualifying present. Zero, missing or duplicate slots are not
-filled using qualifying. These historical records may include later revisions;
-this is not a claim of original as-of grid snapshots. Qualifying order likewise
-requires every evaluated driver's qualifying position. Before qualifying, the
-race comparison can therefore be unavailable even if the model can predict.
-
-Backtest model order remains raw-score order, which is expected mean-rank order
-under the shared simulation noise. Its existing metrics and uncertainty remain
-unchanged. Displayed means estimate that order from finite simulation draws;
-nearly tied drivers can swap. Ranking error gives tied scores their average
-occupied rank; driver code resolves ties for a single winner/top-three pick.
-Validation only reports performance; it does not automatically tune weights.
-
-The score is 85% explicit weighted evidence and 15% learned adjustment.
-Competition gets more influence than practice when available. Missing sources
-redistribute the weights; before current sessions exist, history supplies the
-evidence. The policies below cover all four targets. Worsening an evidence
-score cannot improve the learned prediction with other inputs fixed.
-Published grids can include target penalties and pit-lane starts.
-Race/Sprint use seven learned inputs, including separate Q/SQ performance;
-Q/SQ use the original six. Grid and Q/SQ share the existing grid budget equally
-when both are available. No circuit-dependent recovery weight is active.
-No active weather forecast or quantified upgrade effect exists.
-Simple comparisons are now included in the backtest display. There is no
-probability calibration or automatic selection of the best-looking method.
-Eight backtests alone do not establish reliable prediction accuracy.
-
-SOURCE WEIGHTS AND MODEL INPUTS
-Weights below are within the 85% evidence component, with all listed sources
-available. Missing sources redistribute their weights per driver. These are
-score assumptions, not percentages of winning probability.
-
-Target               History  Grid/Q-SQ budget  Earlier Sprint  Earlier SQ  Practice
-Grand Prix           20%      65%               10%             2.5%        2.5%
-Sprint               20%      75%                0%             0%          5%
-Qualifying           30%       0%               10%            50%         10%
-Sprint Qualifying    85%       0%                0%             0%         15%
-
-For Race/Sprint, split the grid budget equally between actual starting grid
-and corresponding Q/SQ position when both are available: at full availability,
-the GP's 65% becomes 32.5% each; Sprint's 75% becomes 37.5% each. Missing or
-invalid Q/SQ performance retains the existing anchor. Equal Q/SQ and starting
-positions leave that anchor unchanged. Q/SQ position is a performance proxy,
-not a pure pace or recovery measurement. Mixed-stage lap-time gaps are not used.
-The split is fixed; it does not use the circuit grid_stickiness value.
-Before current sessions exist, history supplies the evidence component. On a
-normal weekend, qualifying with only history/practice uses 75%/25% between them.
-
-influence_weight_grid is the combined grid/Q-SQ budget. Its applied components
-are influence_weight_starting_grid and influence_weight_grid_qualifying. They
-sum to the combined budget; do not add the components to that budget again.
-
-The six base model columns are influence_history, influence_grid,
-influence_sprint, influence_qualifying, influence_practice and influence_anchor.
-Race/Sprint add influence_grid_qualifying as a seventh column for Q/SQ performance.
-The existing influence_qualifying column represents earlier SQ evidence; it is
-not the separate current GP qualifying input. Missing learned inputs use history.
-If all historical evidence is absent, its explicit neutral fallback is 0.5.
-Normalised scores are smaller for better performance. Native model predictions
-are bounded to 0..1 and monotone in each active input. This does not guarantee
-the same rank when other drivers, available sources or training examples change.
-
-Training uses all usable earlier rounds in the selected season. Example weights
-halve every six rounds and are divided by weekend row counts, so Sprint weekends
-do not get twice the training weight. Current form still uses the four-round
-window described above. History is updated only after a weekend's feature rows
-are built; same-weekend evidence enters through explicitly eligible sessions.
-Historical grids are used only at a stage where corresponding Q/SQ is available.
-Historical pit-lane records with grid=0 retain the existing qualifying fallback.
-
-model.json stores only the native 15% component. To reproduce the full score,
-use (1-learned_share)*influence_anchor + learned_share*clip(native_prediction,0,1).
-run_info.json records that formula, blend and exact model_features;
-influence_policy.json and session_influence.csv record policy and applied weights.
-A cache stores session observations, not a pretrained model or prior predictions.
-Every run retrains; missing history or timing downloads can still prevent a run.
-
-This is a new reusable pipeline adapted from earlier work, not an exact copy
-of the original scripts. The limited validation below does not establish
-general predictive accuracy. Planned features are not implemented until coded.
-
-Validation for the pace-and-tyres branch:
-- 19 offline calculation/integration tests passed locally and on Windows.
-- A Singapore pre-race replay completed on the user's Windows environment,
-  including FastF1 session loading, XGBoost training and prediction output.
-- That run found matched short practice pace for 22/22 drivers, longer-run
-  practice pace for 8/22, and longer-run Sprint pace for 14/22.
-- The historical winner-pick backtest remained 1/4. These checks establish
-  successful execution, not improved predictive accuracy.
-
-REFERENCES / ATTRIBUTION
-Starting-point scripts by farhansh911:
-  https://github.com/farhansh911/baku-2026
-  https://github.com/farhansh911/bahrain-malaysia-2026
-Those projects credit Mariana Antaya:
-  https://github.com/mar-antaya/2026_f1_predictions
-FastF1:
-  https://docs.fastf1.dev/
-Attribution does not itself establish permission to redistribute copied code.
-
-CURRENT VALIDATION: 20 OCTOBER 2026 (SINGAPORE TIME)
-142 checks passed in the authoritative external test_circuit_profiles_final.py:
-  python ../test_circuit_profiles_final.py .
-This command requires that file in the parent folder. The test file is kept
-outside Git as requested; a fresh clone does not include it. Tests cover source
-cutoffs/identity/conflicts, grids/pit starts, caches, history, qualifying split,
-every fit's section exclusion, native monotonicity, saved-model reproduction,
-unchanged simulation draws, close-call direction, output order and fair comparisons.
-
-Sixteen production replays passed: all 13 eligible GPs (rounds 5-17), plus
-Singapore Q/SQ/Sprint. Native model files were byte-identical to the merged
-baseline; model input CSVs, old training columns, existing backtest CSVs,
-uncertainty and first/top-three simulation shares were unchanged. The added
-training column benchmark_grid_position is diagnostic only. Section pace stays off.
-
-Across all 13 GPs, using published pre-cutoff FIA grids for the grid baseline:
-Method                         Average places out  Winner picks  Podium drivers
-Model, new mean-position order       3.259             8/13          25/39
-Starting-grid order                  3.510             8/13          24/39
-Model, previous win-share display    3.238             8/13          25/39
-The new model display beats grid order in 7 races, ties in 3 and loses in 3.
-Compared with the old display, it improves 3, ties 5 and worsens 5; the 0.021
-overall increase is an ordering effect, not a change in model predictions.
-All GP first-place picks and podium sets were retained. Pit-lane starters share
-the back-of-field ranks in the grid benchmark because their exit order is unknown.
-
-Madrid lacks qualifying positions for Stroll and Bearman. Across the SAME
-12 complete qualifying comparisons (excluding Madrid):
-Method                         Average places out  Winner picks  Podium drivers
-Model, new mean-position order       3.348             8/12          22/36
-Qualifying order                     3.409             8/12          20/36
-Do not compare that 12-race mean directly with the 13-race grid table.
-
-Singapore's retained routine report is 5/8, 3.125 places out, 16/24 podium drivers.
-Its fair grid/Q comparison uses seven of those eight tests, since Madrid's Q
-order is incomplete: Model 5/7, 13/21, 3.260; grid 5/7, 13/21, 3.597;
-Q order 5/7, 12/21, 3.312. The actual Singapore prediction's ranking error is
-2.000 with mean ordering (previous display 1.909), versus grid 3.000 and Q 2.455.
-Its predicted first three remain Verstappen, Leclerc, Antonelli.
-
-Other modes remain limited: Singapore Q backtests are 4/8 and 2.009 places out,
-versus history-only 1/8 and 2.261. SQ is still 0/4, about 1.916 places out.
-On the three common recent Sprint tests, grid picks 2/3 winners versus the
-model's 0/3 and has lower rank error (1.576 versus 1.697). These small samples
-do not justify automatically switching the model; the weakness is visible.
-
-The first four GPs still lack the required earlier training weekends. Replays
-used existing caches and current published historical revisions, not newly
-downloaded timing or untouched future events. These are descriptive comparisons,
-not evidence of calibrated probabilities or a statistically proven advantage.
-
-EARLIER GRID-SPLIT CHECKPOINT: 19 OCTOBER 2026 (124 TESTS)
-
-Dated FIA documents covered all 17 GP and 6 Sprint grids through Singapore,
-with all 22 drivers. F1/OpenF1 endpoints were also checked; undated responses
-first retrieved after a historical cutoff were excluded. Singapore's final FIA
-grid puts Russell P19, with Alonso, Stroll and Hadjar starting from the pit lane.
-
-Thirteen full GP replays (Canada-Singapore) used the same cached sessions,
-25,000 simulations, seed 42, and earlier-round-only training. Target/future
-result loads were prohibited. Labels were unchanged and source grids preceded
-each cutoff. FP2/FP3 were unavailable in the supplied data.
-
-Version                              Places out  Winners  Podium-driver hits
-Previous Q-order assumption           3.273       8/13     24/39
-Published grid before split           3.371       8/13     25/39
-Published grid + equal split (active)  3.238       8/13     25/39
-Circuit-dependent split (not adopted)  3.266       8/13     25/39
-
-The equal split improved 7 races, tied 5 and worsened 1. Direct model-score rank
-error also improved: 3.406 to 3.252. Earlier seven-race error improved 3.597 to
-3.494, later six-race error 3.106 to 2.939. These races were examined previously;
-they are not an untouched holdout. Candidate settings were fixed before this
-comparison. No driver-specific rules were added.
-
-Singapore's usual eight-test report stays 5/8, with rank error 3.307 to 3.125.
-Russell's Singapore prediction improves P16 to P9 (actual P9); Hungary Antonelli
-P7 to P5 (actual P3); Italy Antonelli P15 to P11 (actual P1); Belgium Hadjar P17
-to P13 (actual P6). Large recoveries remain underestimated. Netherlands worsens
-2.455 to 2.636. Sorting by sampled win share is unstable near tiny/zero shares;
-it is not a calibrated expected finishing order.
-
-The adopted code completed 16 full-program replays: 13 GP plus Singapore Sprint,
-Q and SQ, reproducing the tested candidate exactly. Q/SQ outputs were unchanged.
-Saved native components reproduced fitted scores with the recorded feature names.
-Cached runs do not establish successful fresh timing downloads or validate the
-raw-lap cause of suspicious legacy pace values.
-
-EARLIER SESSION-INFLUENCE CHECKPOINT: 17 OCTOBER 2026
-Twelve candidates compared three source policies, four/six-round form windows
-and 0%/15% learned adjustment. Development used event-session rank error in
-rounds 4-8; selected settings were fixed for rounds 9-16. Singapore's result was
-not used in that selection. The late-weekend masks were FP1/SQ/S/Q for GP,
-FP1/SQ/S for Q, FP1/SQ for Sprint and FP1 for SQ, subject to availability.
-These checks do not validate all earlier input stages.
-
-Target             Events  Old rank error  New rank error  Old picks  New picks
-Grand Prix         8       3.77            3.31            2/8        5/8
-Qualifying         8       2.22            2.01            2/8        4/8
-Sprint             2       2.00            1.18            0/2        0/2
-Sprint Qualifying  2       1.55            1.68            0/2        0/2
-
-GP podium overlap improved 11/24 to 16/24. Grid alone scored GP error 3.42 and
-5/8 winners; history alone 3.88 and 1/8. Sprint grid alone 1.23 and 1/2; SQ history
-alone 1.45 and 0/2, better rank error than the selected SQ policy. No retuning on
-those outcomes was performed. Sprint/SQ samples are particularly small.
-The report expanded to eight tests while uncertainty retained four. That
-checkpoint passed 96 checks; today's 142-check result supersedes that count.
-
-2024-2026 CIRCUIT-CATEGORY CHECK
-Published qualifying/GP results covered 24 weekends in 2024, 24 in 2025 and 17
-in 2026: 65 qualifying sessions, 65 Grands Prix and 2,659 driver results. Sprints
-were excluded to avoid double-counting weekends. 721 available uploaded 2026
-positions matched published API positions with zero differences. API pagination
-was used because pages are capped at 100 entries. Sources:
-  https://api.jolpi.ca/ergast/f1/2024/results/
-  https://api.jolpi.ca/ergast/f1/2024/qualifying/
-  https://api.jolpi.ca/ergast/f1/2025/results/
-  https://api.jolpi.ca/ergast/f1/2025/qualifying/
-  https://api.jolpi.ca/ergast/f1/2026/results/
-  https://api.jolpi.ca/ergast/f1/2026/qualifying/
-Madrid's source: https://www.madring.com/en/circuit (837m longest straight,
-heavy braking, slow exits, fast linked corners and banked Turn 12). It supports
-the tagged characteristics, not an invented tyre-demand rating.
-
-Each driver was compared within the same season/session family/current team,
-using only earlier appearances: at least three appearances and two matching
-tracks. Positions were normalised for 20/22-car fields. Both methods used the
-same prior results and 0.85-per-round recency: recent-form reference versus added
-category preference. Finishers-only checks did not reverse the main finding.
-Seven category-weight configurations were checked; selection used 2024, then
-fixed settings were checked on 2025 and 2026 through round16, excluding Singapore.
-Current profiles were applied retrospectively, not claimed as historical snapshots.
-
-Season / session        Without category preference  Current category weights
-2025 qualifying         3.15                         3.19
-2025 race               3.69                         3.72
-2026 through R16 Q      2.17                         2.23
-2026 through R16 Race   3.96                         4.10
-
-Equal category weights were best on 2024 but did not beat the reference on later
-seasons. Weekend resampling also did not show improvement. No category weight
-change was justified; manual weights remain provisional. Positions can reflect
-weather, strategy, penalties and damage, not just circuit suitability. Drivers
-need not reproduce the same positions on tracks sharing a broad category.
-This was a simple historical-average check, not the full predictor's accuracy.
-
-At the older category checkpoint, the separate Singapore replay retained 2/4
-winners, using 462 training examples from 16 earlier weekends and FP1/SQ/S/Q.
-It had no automatic Russell grid penalty. Those results predate the active
-session/grid changes and are not the latest prediction. The Hadjar-first output
-used incomplete data and is not a valid comparison for category accuracy.
-
-REMAINING SCOPE AND EXTERNAL FILES
-Weather forecasts/upgrades were left on a separate unmerged branch; their tested
-weight changes did not improve results. Probability calibration remains future
-work. Detailed overtaking, traffic, strategy and live-session updates
-are deferred. The DNF-cause adjustment was discarded; early-season fallback is
-also deferred. Section telemetry remains disabled pending validated corrections.
-Raw API responses, caches, ZIPs, telemetry samples, analysis scripts, full driver
-comparisons and the authoritative tests stay outside Git. The uploaded archives
-are retained in the cloud for possible v3 work. Do not infer that a fresh cloud
-checkout contains the laptop's caches or that this cache is a pretrained model.
+  python predict_anytime.py --year 2026 --race Austin --session qualifying
+  python predict_anytime.py --year 2026 --race Austin --session race
+  python predict_anytime.py --year 2026 --race Austin --session sprint
+  python predict_anytime.py --year 2026 --race Austin --session sprint-qualifying
+
+Only choose Sprint/SQ at a Sprint weekend. Run from the f1-predictor Git folder.
+After the scheduled target start, enter y to replay using the pre-start cutoff.
+An explicit --as-of timestamp must precede the target and cannot be in the future.
+The target's results and later sessions are never prediction inputs.
+Before current practice exists the model uses earlier form. Rerun after practice
+and qualifying to use newly available inputs. At least four earlier usable
+weekends are required. Missing inputs are reported, not invented.
+
+SOURCES AND CACHE
+OpenF1 supplies meeting/session schedules, drivers, classifications, grids,
+lap/sector times, stints, pit events, weather and race-control messages.
+Cancelled meetings and testing are excluded from round numbering. Session and
+meeting keys must match. Session starts/ends and all accepted lap timestamps
+must precede the prediction cutoff. Recent practice/Sprint pace also requires an
+observed chequered flag before cutoff; the original conservative 24-hour
+fallback is retained for older sessions with missing status messages. Historical revisions can differ from
+what was originally published: this is not an original-snapshot archive.
+
+The published starting-grid policy remains FIA documents first, then dated or
+observed F1/OpenF1 records, with qualifying order as fallback. Manual --grid and
+--grid-source qualifying still work. These sources do not use FastF1.
+Pit-lane starters retain the existing back-of-field scoring treatment; actual
+exit order and delay are not modelled. Historical missing grid values remain
+missing for the benchmark rather than being invented.
+
+Raw OpenF1 responses are cached under ~/F1Data/cache/openf1/http. On Windows:
+  C:\Users\Yi Wei Toh\F1Data\cache\openf1\http
+The first cold run can take several minutes because it loads prior weekends.
+Requests are spaced to respect OpenF1's free-tier limits and rate-limit
+responses are retried. Downloads print their endpoint/session progress.
+Metadata/empty responses are renewed periodically; completed-session responses
+are reused unless --refresh is requested. No old FastF1 summaries are consumed.
+
+--offline forbids all downloads, including grid sources. Required metadata must
+already be cached. --refresh renews source responses and cannot be combined with
+--offline. --rebuild-summaries is retained for command compatibility: processed
+OpenF1 evidence is calculated from raw cached responses on each run anyway.
+Failed or sparse sources are reported in run_info.json. Weather is diagnostic;
+missing competitive-session weather is left unknown rather than filled.
+
+LAP QUALITY
+lap_quality.csv records accepted/rejected current-session laps and reasons.
+These are derived checks, NOT an official IsAccurate flag from the provider.
+Reject missing/nonfinite timing, duplicate lap identities, pit boundaries,
+deleted laps, active flags/neutralisation, ambiguous stints and unknown tyre
+information. Sector sums must match lap duration within 3 milliseconds.
+Deletion resolution uses the driver and lap stated in the message, or a unique
+lap-time match. race_control.lap_number is the message's current race lap, not
+necessarily the deleted lap; it is not used as a deletion target.
+An unresolved notice leaves that driver's already-started laps unverified up to
+the message time plus a one-second allowance for whole-second message timestamps
+and lap-start jitter. Later laps can pass all normal checks. This is an explicit
+clock allowance, not a guarantee of identical timestamps across sources. An
+ambiguous reinstatement cannot validate multiple candidate laps. Pit-out durations
+can include garage time before date_start, so start+duration is not treated as a
+reliable outlap crossing time when resolving a deletion. Outlaps remain excluded.
+The quality_state column separates valid_for_pace, excluded_from_pace and
+unverified. Unknown evidence is not described as proven invalid.
+
+The experimental strict policy also checked consecutive lap-start timestamps.
+It is NOT the default: OpenF1 timestamps did not support a 3-ms continuity test
+in our data. On 23 matched historical sessions, this reduced accepted laps from
+7,515 to 563. Tightening sector sums alone from 50 ms to 3 ms did not remove any
+of those 7,515 laps. Timing continuity cannot be claimed verified by the default.
+Do not reinterpret a failed precision check as proof every lap time is wrong.
+
+MODEL POLICY (UNCHANGED)
+Native XGBoost uses the existing six Q/SQ or seven Race/Sprint evidence inputs.
+Scores combine 85% explicit evidence with 15% learned adjustment. History covers
+four earlier rounds with a three-round half-life. Earlier/later sessions are
+selected in scheduled order; each training example uses only its earlier inputs.
+One weekend has one historical budget; GP/Q have three times the vote of S/SQ.
+
+Source budgets when available:
+  Race: history .20, grid/Q .65, Sprint .10, earlier SQ .025, practice .025.
+  Sprint: history .20, grid/SQ .75, practice .05.
+  Qualifying: history .30, Sprint .10, earlier SQ .50, practice .10.
+  SQ: history .85, practice .15.
+Race/Sprint split the existing grid budget equally between starting position and
+qualifying performance when both are available. Missing sources redistribute
+weights. No driver-specific bonuses or weather/upgrade bonuses are introduced.
+The existing tyre-matching, pace-support, 0..5% gap guard, history/circuit groups,
+monotonic constraints, random seed and simulation policy are retained.
+Section telemetry remains disabled and excluded from every fit.
+
+OUTPUT
+All session tables sort by mean simulated position. Race/Sprint show Position,
+Driver, Team, Mean position and Close call. A close call appears only on the
+lower row: e.g. Hamilton beats Antonelli in 49.8% of simulations. It counts the
+row driver's head-to-head wins in the SAME draws; 45–55% is a display band,
+not calibrated real-world confidence. Q/SQ show Position, Driver, Team, Pole share.
+
+Outputs remain under ~/F1Data/outputs/<year>_<round>_<session>/latest:
+  predictions.csv, simulation_details.csv, prediction_inputs.csv, training.csv,
+  model.json, influence_policy.json, session_influence.csv, starting_grid.csv,
+  grid_sources.json, backtest.csv, backtest_comparisons.csv, lap_quality.csv,
+  run_info.json, circuit_matches.csv, pace_rejections.csv and empty legacy
+  section exports. Repeating a run overwrites its latest output files.
+Model features and source/quality policy are recorded in run_info.json.
+
+VALIDATION
+The last eight eligible chronological tests are shown in the existing backtest
+section. The latest four set uncertainty. Simple baselines use the same complete
+weekends/drivers for every displayed method: grid/Q order for Race/Sprint,
+history only for Q/SQ. Missing comparisons are reported explicitly.
+Source changes can alter available evidence and learned scores even though the
+model formula is fixed. More available FP2 data is a coverage change, not proof
+that a provider is inherently more accurate. Sparse Sprint tests and revised
+historical records limit conclusions. Never tune to a known winner or favourite.
+
+Earlier matched-pace experiment (24 October 2026): 13 GPs retained 8/13 winner
+picks and 3.259 average places out with OpenF1 pace throughout, versus the saved
+FastF1 baseline; podium hits fell 25/39 to 23/39. Q pole picks fell 9/13 to 7/13.
+That experiment retained classifications and used matched FP1/Sprint coverage;
+it was NOT a fully OpenF1-only test and must not be labelled as one.
+Full-source migration checks: 140 retained-model/new-source tests passed. Sixteen
+production replays ran with FastF1 imports blocked and network requests forbidden
+(after caching genuine OpenF1 responses). All 374 GP driver results across 17
+weekends matched the independent published finishing-order sequence. Null numeric
+positions for retired entries retain that internally validated provider sequence;
+raw reported positions and derived-order flags are distinct.
+
+Full-source GP comparison: 8/13 winner picks, 24/39 podium drivers, 3.273 average
+places out; the old mean-order baseline was 8/13, 25/39, 3.259. The latest
+Singapore race backtest is 6/8 with 3.125 error; Q is 4/8 with 2.075 error.
+Texas before FP3/Q: pole order VER/RUS/NOR/HAD/LEC; race VER/ANT/LEC/HAD/HAM.
+These are early-stage experimental predictions. The full-source history also has
+more FP2 coverage than the old cache, so this is not a pure lap-quality comparison.
+Stage-matched Texas reports remain weak (Q 1/8, Race 2/8). See the PR/report
+for hybrid and diagnostic continuity-check results. Do not select a filtering
+policy because it produces a preferred driver order.
+Tests and raw analysis reports remain outside Git, per project preference.
+
+SOURCES AND CREDITS
+OpenF1: https://openf1.org/ (public historical API, unofficial project).
+Retain original project attribution in README. Data/API availability and provider
+terms apply. Raw caches, login tokens, ZIPs and reports do not belong in Git.
+Deferred: section telemetry corrections, early-season fallback, sophisticated
+recovery, calibrated probabilities and live-session prediction updates.
+
+LAP-QUALITY RECOVERY CHECK (24 OCTOBER 2026)
+152 retained model/source tests passed. The first adapter discarded an entire
+driver's session for an unidentified deletion; later laps are now checked
+individually. In the matched historical FP1/Sprint sample, 48 additional laps
+pass all existing checks (7,515 to 7,563). Austin FP1 increases 202 to 240, FP2
+278 to 333. No model parameters or classification labels were changed.
+
+The saved Hungary selected-lap sample supplies 132 previously accurate laps.
+All 132 OpenF1 lap durations match exactly; 128 pass the corrected adapter versus
+108 before. The remaining four are unknown tyre information, a sector-sum
+inconsistency or pit-boundary evidence. This selected positive-only sample
+cannot establish false-acceptance rates or Austin-specific FastF1 parity.
+The historical before/after and Texas results are in the PR and external report.
+
+LAP-QUALITY RECOVERY CHECK (24 OCTOBER 2026)
+152 tests and 72 event/variant replays passed with FastF1 imports blocked.
+Training labels and grid inputs were preserved in every before/after pair.
+In the matched FP1/Sprint sample, accepted laps increase 7,515 to 7,563.
+Texas FP1 increases 202 to 240; FP2 increases 278 to 333.
+The saved Hungary selected-lap sample matches OpenF1 lap durations exactly in
+all 132 cases; checks now accept 128 versus 108 before. Four remain excluded
+for unknown tyres, inconsistent sectors or pit boundaries. A selected positive
+sample cannot establish false-acceptance rates or Texas-specific FastF1 parity.
+
+Before -> after recovery, same OpenF1 data/model settings:
+  GP: 8/13 winners unchanged; 24/39 podium drivers unchanged; error 3.273 -> 3.266.
+  Q: 7/13 poles unchanged; 19/39 top-three unchanged; error 2.076 -> 2.062.
+  Sprint: 2/4 -> 3/4 winners; 10/12 top-three unchanged; error 2.477 -> 2.455.
+  SQ: 0/4 unchanged; error 1.982 unchanged.
+These small samples do not establish a statistically reliable accuracy gain.
+The current Texas prediction and all per-driver comparisons are in the external
+report. No model weights, driver bonuses or section features were changed.
