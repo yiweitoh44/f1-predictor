@@ -13,6 +13,19 @@ For a new environment, or after pulling the grid-sources update:
   python -m pip install -r requirements.txt
 Check installed-package dependencies:
   python -m pip check
+Fresh F1 timing downloads now require FastF1 3.9+ and an F1TV Access account
+or higher, following Formula 1's October 2026 authentication change.
+After installing requirements, sign in on YOUR laptop:
+  python -m fastf1 auth f1tv --authenticate
+Check sign-in status:
+  python -m fastf1 auth f1tv --status
+Then run the normal prediction command. Renew sign-in if it expires (typically
+after four days). FastF1 stores its login token locally; do not share passwords
+or tokens in chat or commit them to Git. Existing caches remain usable offline.
+Zero-driver downloads are reported as access failures, rather than implying
+the practice session is still running. A successful authenticated live download
+still requires checking on the account holder's machine.
+Upstream release: https://github.com/theOehrly/Fast-F1/releases/tag/v3.9.0
 This checks dependencies, not whether Windows permits every compiled module.
 The current script uses native XGBoost training, rather than XGBRegressor.
 No OpenAI API key, LLM or GPU is required.
@@ -502,7 +515,15 @@ FastF1:
   https://docs.fastf1.dev/
 Attribution does not itself establish permission to redistribute copied code.
 
-CURRENT VALIDATION: 20 OCTOBER 2026 (SINGAPORE TIME)
+AUTHENTICATION COMPATIBILITY CHECK: 24 OCTOBER 2026 (SINGAPORE TIME)
+145 tests passed with FastF1 3.9.0, including zero-driver download reporting,
+safe authentication failures and actionable instructions for older versions.
+Cached production replays checked model/input/backtest/simulation compatibility.
+Authenticated fresh timing downloads require the user's own eligible account;
+they were not verified using an account in the cloud. The upstream v3.9.0
+release documents the new F1 account requirement. Existing caches are retained.
+
+OUTPUT VALIDATION CHECKPOINT: 20 OCTOBER 2026 (SINGAPORE TIME)
 142 checks passed in the authoritative external test_circuit_profiles_final.py:
   python ../test_circuit_profiles_final.py .
 This command requires that file in the parent folder. The test file is kept

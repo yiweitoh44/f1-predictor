@@ -569,6 +569,9 @@ class Store:
             print(f"  Building session summary R{rnd} {code}", flush=True)
             session = fastf1.get_session(self.year, rnd, code)
             session.load(laps=True, telemetry=False, weather=True, messages=True)
+            if len(session.results) < 2:
+                raise ValueError('FastF1 downloaded no usable driver results. This is a data-access failure, not evidence that the session is unfinished. '
+                                 'Install FastF1 >=3.9 and run: python -m fastf1 auth f1tv --authenticate')
             completed = completed_session_time(session, start, self.now)
             if completed >= self.now:
                 self.unavailable.append({"round": rnd, "session": code,
@@ -579,6 +582,9 @@ class Store:
                 if self.rebuild_summaries and saved_data and saved_data.get('lap_data_loaded'):
                     raise ValueError('raw timing unavailable for summary rebuild; retain previous completed summary')
                 print(f"  R{rnd} {code}: classifications only; lap timing/pace unavailable.")
+        except fastf1.exceptions.F1AuthError:
+            raise ValueError('F1 timing sign-in failed or expired. Run: python -m fastf1 auth f1tv --authenticate '
+                             '(F1TV Access or higher required). Keep account credentials on your own machine.') from None
         except Exception as exc:
             print(f"  R{rnd} {code} unavailable: {type(exc).__name__}: {str(exc)[:130]}")
             self.unavailable.append({"round": rnd, "session": code,
@@ -1013,6 +1019,9 @@ def print_prediction_table(output):
 
 def run(args):
     import fastf1
+    if not args.offline and tuple(int(x) for x in fastf1.__version__.split('.')[:2]) < (3, 9):
+        raise ValueError('New F1 timing downloads require FastF1 >=3.9. Run: python -m pip install -r requirements.txt; '
+                         'then python -m fastf1 auth f1tv --authenticate (F1TV Access or higher).')
     now = pd.Timestamp.now(tz="UTC")
     if args.as_of:
         now = pd.to_datetime(args.as_of, utc=True, errors="raise")
