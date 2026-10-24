@@ -58,9 +58,76 @@ class Client:
   return pd.DataFrame(events)
 
 
+DELETION_CLOCK_MARGIN = pd.Timedelta(seconds=1)
+
+
+def deletion_evidence(laps, drivers, control, cutoff):
+ """Resolve explicit IDs/times; never guess the nearest lap from message time.
+
+ An unresolved notice only makes laps already started at that notice unknown.
+ One second covers the race-control timestamp's whole-second precision and
+ observed lap-start jitter. Later laps still need every normal quality check.
+ """
+ deleted = {}
+ unknown_before = {}
+ numbers = {d['driver_number'] for d in drivers}
+ for message in sorted(control, key=lambda item: item['date']):
+  when = stamp(message['date'])
+  if when > cutoff:
+   continue
+  text = message.get('message', '').upper()
+  restored = bool(re.search(r'\bREINSTATED\b', text))
+  if not restored and not re.search(r'\bDELETED\b', text):
+   continue
+  car = re.search(r'\b(?:CAR|DRIVER)\s*#?\s*(\d+)\b', text)
+  number = message.get('driver_number')
+  if number is None and car:
+   number = int(car[1])
+  if car and number is not None and int(car[1]) != number:
+   # Conflicting identity cannot validate a reinstatement.
+   if not restored:
+    for candidate in {number, int(car[1])} & numbers:
+     unknown_before[candidate] = max(unknown_before.get(candidate, when), when + DELETION_CLOCK_MARGIN)
+   continue
+  # race_control.lap_number is the lap when the message was issued,
+  # not necessarily the driver's deleted lap. Use the explicit message only.
+  explicit = re.search(r'\bLAP\s+(\d+)\b', text)
+  lap_id = int(explicit[1]) if explicit else None
+  if number in numbers and isinstance(lap_id, (int, float)) and lap_id >= 1 and lap_id == int(lap_id):
+   deleted[number, int(lap_id)] = not restored
+   continue
+  time_match = re.search(r'\bTIME\s+(\d+):(\d+\.\d+)\b', text)
+  candidates = []
+  if number in numbers and time_match:
+   duration = 60 * int(time_match[1]) + float(time_match[2])
+   for lap in laps:
+    value = lap.get('lap_duration')
+    if lap['driver_number'] != number or not isinstance(value, (int, float)) or not np.isfinite(value) or abs(value-duration) > .0005001:
+     continue
+    if lap.get('is_pit_out_lap') is True:
+     # Outlap duration can include garage time before date_start. It cannot
+     # supply a crossing timestamp, but a unique time still identifies the
+     # already-excluded outlap without making all earlier laps unknown.
+     eligible = not lap.get('date_start') or stamp(lap['date_start']) <= when + DELETION_CLOCK_MARGIN
+    else:
+     eligible = bool(lap.get('date_start')) and stamp(lap['date_start']) + pd.Timedelta(seconds=value) <= when + DELETION_CLOCK_MARGIN
+    if eligible:
+     candidates.append((number, lap['lap_number']))
+  if len(candidates) == 1 or candidates and not restored:
+   # A repeated identical time can exclude every candidate, but cannot
+   # reinstate every candidate without uniquely identifying the lap.
+   for candidate in candidates:
+    deleted[candidate] = not restored
+  elif not restored:
+   affected = {number} if number in numbers else numbers
+   for candidate in affected:
+    unknown_before[candidate] = max(unknown_before.get(candidate, when), when + DELETION_CLOCK_MARGIN)
+ return deleted, unknown_before
+
+
 def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
  """Derived validity, not an official IsAccurate flag; unknown stays rejected."""
- mapping={d['driver_number']:d['name_acronym'] for d in drivers};deleted={};excluded=set();flags={};blocked=[];neutral_blocks=[];last=start
+ mapping={d['driver_number']:d['name_acronym'] for d in drivers};deleted,unknown_before=deletion_evidence(laps,drivers,control,cutoff);flags={};blocked=[];neutral_blocks=[];last=start
  for msg in sorted(control,key=lambda x:x['date']):
   t=stamp(msg['date'])
   if t>cutoff:continue
@@ -75,13 +142,7 @@ def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
   text=msg.get('message','')
   if 'SAFETY CAR DEPLOYED' in text:flags[('Neutralisation',None)]='SC'
   if 'SAFETY CAR IN PIT LANE' in text:flags.pop(('Neutralisation',None),None)
-  if 'DELETED' in text or 'REINSTATED' in text:
-   match=re.search(r'CAR\s+(\d+).*?\bLAP\s+(\d+)',text)
-   if match:deleted[tuple(map(int,match.groups()))]='DELETED' in text;continue
-   car=re.search(r'CAR\s+(\d+)',text);tm=re.search(r'TIME\s+(\d+):(\d+\.\d+)',text)
-   found=[r for r in laps if car and tm and r['driver_number']==int(car[1]) and isinstance(r.get('lap_duration'),(int,float)) and abs(r['lap_duration']-60*int(tm[1])-float(tm[2]))<.001]
-   if len(found)==1:deleted[(found[0]['driver_number'],found[0]['lap_number'])]='DELETED' in text
-   elif 'DELETED' in text and car:excluded.add(int(car[1]))
+
  if flags:
   blocked.append((last,cutoff))
   if 'SC' in flags.values():neutral_blocks.append((last,cutoff))
@@ -97,7 +158,8 @@ def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
    t=stamp(r['date_start']);finish=t+pd.Timedelta(seconds=duration)
    if t<start or finish>cutoff:reason='outside cutoff'
    elif pair in pitset or pair in outs or (num,n+1) in outs:reason='pit boundary'
-   elif num in excluded or deleted.get(pair,False):reason='deleted or unresolved deletion'
+   elif deleted.get(pair,False):reason='deleted lap'
+   elif num in unknown_before and t<=unknown_before[num]:reason='unresolved earlier deletion'
    elif any(t<b and finish>x for x,b in blocked):reason='flag/neutralisation interval'
    else:
     sectors=[r.get('duration_sector_'+str(i)) for i in [1,2,3]]
@@ -115,7 +177,8 @@ def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
    else:
     s=matches[0];age=s.get('tyre_age_at_start')
     if not isinstance(age,(int,float)) or age<0 or s.get('compound') not in {'SOFT','MEDIUM','HARD','INTERMEDIATE','WET'}:reason='unknown tyre'
-  audit.append(dict(driver=mapping.get(num,str(num)),lap_number=n,accepted=reason is None,reason=reason or 'passed derived checks'))
+  state='valid_for_pace' if reason is None else 'unverified' if reason in {'missing timing','unknown tyre','ambiguous stint','unresolved earlier deletion','consecutive lap timing mismatch'} else 'excluded_from_pace'
+  audit.append(dict(driver=mapping.get(num,str(num)),lap_number=n,accepted=reason is None,quality_state=state,reason=reason or 'passed derived checks'))
   if reason is None:
    accepted.append(dict(Driver=mapping[num],Compound=s['compound'],TyreLife=age+n-s['lap_start']+1,FreshTyre=age==0,LapNumber=n,Stint=s['stint_number'],LapStartTime=t-start,lap_seconds=duration))
  return pd.DataFrame(accepted,columns=['Driver','Compound','TyreLife','FreshTyre','LapNumber','Stint','LapStartTime','lap_seconds']),audit

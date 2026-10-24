@@ -67,8 +67,18 @@ These are derived checks, NOT an official IsAccurate flag from the provider.
 Reject missing/nonfinite timing, duplicate lap identities, pit boundaries,
 deleted laps, active flags/neutralisation, ambiguous stints and unknown tyre
 information. Sector sums must match lap duration within 3 milliseconds.
-Unresolvable driver-specific lap deletions conservatively omit that driver's
-session pace. An ambiguous reinstatement cannot validate a rejected lap.
+Deletion resolution uses the driver and lap stated in the message, or a unique
+lap-time match. race_control.lap_number is the message's current race lap, not
+necessarily the deleted lap; it is not used as a deletion target.
+An unresolved notice leaves that driver's already-started laps unverified up to
+the message time plus a one-second allowance for whole-second message timestamps
+and lap-start jitter. Later laps can pass all normal checks. This is an explicit
+clock allowance, not a guarantee of identical timestamps across sources. An
+ambiguous reinstatement cannot validate multiple candidate laps. Pit-out durations
+can include garage time before date_start, so start+duration is not treated as a
+reliable outlap crossing time when resolving a deletion. Outlaps remain excluded.
+The quality_state column separates valid_for_pace, excluded_from_pace and
+unverified. Unknown evidence is not described as proven invalid.
 
 The experimental strict policy also checked consecutive lap-start timestamps.
 It is NOT the default: OpenF1 timestamps did not support a 3-ms continuity test
@@ -150,3 +160,36 @@ Retain original project attribution in README. Data/API availability and provide
 terms apply. Raw caches, login tokens, ZIPs and reports do not belong in Git.
 Deferred: section telemetry corrections, early-season fallback, sophisticated
 recovery, calibrated probabilities and live-session prediction updates.
+
+LAP-QUALITY RECOVERY CHECK (24 OCTOBER 2026)
+152 retained model/source tests passed. The first adapter discarded an entire
+driver's session for an unidentified deletion; later laps are now checked
+individually. In the matched historical FP1/Sprint sample, 48 additional laps
+pass all existing checks (7,515 to 7,563). Austin FP1 increases 202 to 240, FP2
+278 to 333. No model parameters or classification labels were changed.
+
+The saved Hungary selected-lap sample supplies 132 previously accurate laps.
+All 132 OpenF1 lap durations match exactly; 128 pass the corrected adapter versus
+108 before. The remaining four are unknown tyre information, a sector-sum
+inconsistency or pit-boundary evidence. This selected positive-only sample
+cannot establish false-acceptance rates or Austin-specific FastF1 parity.
+The historical before/after and Texas results are in the PR and external report.
+
+LAP-QUALITY RECOVERY CHECK (24 OCTOBER 2026)
+152 tests and 72 event/variant replays passed with FastF1 imports blocked.
+Training labels and grid inputs were preserved in every before/after pair.
+In the matched FP1/Sprint sample, accepted laps increase 7,515 to 7,563.
+Texas FP1 increases 202 to 240; FP2 increases 278 to 333.
+The saved Hungary selected-lap sample matches OpenF1 lap durations exactly in
+all 132 cases; checks now accept 128 versus 108 before. Four remain excluded
+for unknown tyres, inconsistent sectors or pit boundaries. A selected positive
+sample cannot establish false-acceptance rates or Texas-specific FastF1 parity.
+
+Before -> after recovery, same OpenF1 data/model settings:
+  GP: 8/13 winners unchanged; 24/39 podium drivers unchanged; error 3.273 -> 3.266.
+  Q: 7/13 poles unchanged; 19/39 top-three unchanged; error 2.076 -> 2.062.
+  Sprint: 2/4 -> 3/4 winners; 10/12 top-three unchanged; error 2.477 -> 2.455.
+  SQ: 0/4 unchanged; error 1.982 unchanged.
+These small samples do not establish a statistically reliable accuracy gain.
+The current Texas prediction and all per-driver comparisons are in the external
+report. No model weights, driver bonuses or section features were changed.

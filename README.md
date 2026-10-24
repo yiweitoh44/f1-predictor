@@ -32,3 +32,11 @@ The first download can take several minutes; later runs reuse the cache.
 See [START_HERE.txt](START_HERE.txt) for all commands, source cutoffs, derived lap
 quality, output columns, validation limits and remaining work. Simulation shares
 are not calibrated real-world probabilities. Section telemetry stays disabled.
+
+Lap-quality audits now distinguish excluded laps from unverified evidence.
+Ambiguous deletion notices no longer discard a driver's later session laps.
+The recovered laps still pass the existing tyre, sector, flag and pit checks.
+
+The lap-quality recovery fix keeps earlier unidentified deletions unverified
+while allowing later laps to pass normal checks. Replays slightly reduced GP/Q
+ranking error without changing winner counts; exact FastF1 parity is unverified.

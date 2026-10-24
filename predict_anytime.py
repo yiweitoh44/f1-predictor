@@ -1004,7 +1004,7 @@ def run(args):
     folder.mkdir(parents=True, exist_ok=True)
     quality_rows = [dict(session=code, policy=data.get('quality_policy'), **row)
                     for code, data in current.items() for row in data.get('lap_quality_audit', [])]
-    pd.DataFrame(quality_rows, columns=['session','policy','driver','lap_number','accepted','reason']).to_csv(
+    pd.DataFrame(quality_rows, columns=['session','policy','driver','lap_number','accepted','quality_state','reason']).to_csv(
         folder / 'lap_quality.csv', index=False)
     output.to_csv(folder / "predictions.csv", index=False)
     simulation_details.to_csv(folder / 'simulation_details.csv', index=False)
