@@ -1017,6 +1017,38 @@ def print_prediction_table(output):
     print(rendered)
 
 
+def prediction_roster(current, allowed, usable_events, all_data):
+    """Avoid replacing competitive entrants with an FP1 reserve lineup.
+
+    FP1 can contain reserve drivers. Prefer a competitive list, then a full
+    FP2/FP3 list, otherwise assume the previous competitive entries unchanged.
+    Practice lineups and carry-forward entries are assumptions: --roster can
+    confirm substitutions. This only selects entrants, not pace evidence.
+    """
+    competitive = {"R", "Q", "S", "SQ"}
+    codes = [code for code in allowed if code in current and code in competitive]
+    if codes:
+        code = codes[-1]
+        return current[code]["drivers"], "current " + code
+    candidates = [(event, code) for event in usable_events
+                  for code, _ in session_schedule(event)
+                  if code in competitive and code in all_data[int(event["RoundNumber"])]]
+    if not candidates:
+        raise ValueError("No competitive driver roster available. Supply --roster.")
+    event, code = candidates[-1]
+    drivers = all_data[int(event["RoundNumber"])][code]["drivers"]
+    later_practice = [c for c in allowed if c in current and c in {"FP2", "FP3"}
+                      and len(current[c]["drivers"]) >= len(drivers)]
+    if later_practice:
+        practice = later_practice[-1]
+        return current[practice]["drivers"], ("current " + practice
+            + "; assumes this full lineup is entered; --roster confirms replacements")
+    source = (f"earlier R{int(event['RoundNumber'])} {code}; assumes unchanged entries; "
+              "use --roster for confirmed replacements")
+    return drivers, source
+
+
+
 def run(args):
     import fastf1
     if not args.offline and tuple(int(x) for x in fastf1.__version__.split('.')[:2]) < (3, 9):
@@ -1118,8 +1150,7 @@ def run(args):
     frame, history = training_rows(usable_events, all_data, family, set(current), tracks)
     if frame.empty:
         raise ValueError("No valid historical labels available for this prediction type.")
-    # Prefer the latest available weekend roster; otherwise use the last known
-    # competitive entry list. Allow an explicit roster for replacements/new teams.
+    # FP1 reserve lineups must not automatically replace competitive entrants.
     if args.roster:
         roster = pd.read_csv(args.roster, encoding="utf-8-sig")
         if not {"driver", "team"}.issubset(roster.columns):
@@ -1128,23 +1159,17 @@ def run(args):
         roster["name"] = roster["name"] if "name" in roster else roster.driver
         drivers = roster[["driver", "name", "team"]].to_dict("records")
         roster_source = str(args.roster)
-    elif current:
-        last_code = [c for c in allowed if c in current][-1]
-        drivers = current[last_code]["drivers"]
-        roster_source = "current " + last_code + "; check reserve-driver substitutions"
     else:
-        candidates = [(e, c) for e in usable_events for c, _ in session_schedule(e)
-                      if c in all_data[int(e["RoundNumber"])] and c in {"R", "Q", "S", "SQ"}]
-        if not candidates:
-            raise ValueError("No competitive driver roster available. Supply --roster.")
-        last, last_code = candidates[-1]
-        sessions = all_data[int(last["RoundNumber"])]
-        drivers = sessions[last_code]["drivers"]
-        roster_source = f"earlier R{int(last['RoundNumber'])} {last_code}; assumes unchanged drivers/teams"
+        drivers, roster_source = prediction_roster(current, allowed, usable_events, all_data)
     names = [d["driver"] for d in drivers]
     if len(drivers) < 3 or len(names) != len(set(names)) or any(not str(d.get("team", "")).strip() for d in drivers):
         raise ValueError("Roster is incomplete or contains duplicate drivers.")
     print("Roster: " + roster_source)
+    practice_only = sorted({d["driver"] for code, data in current.items() if code.startswith("FP")
+                            for d in data["drivers"]} - set(names))
+    if practice_only:
+        print("Practice-only drivers outside the assumed entry list: " + ", ".join(practice_only)
+              + ". Use --roster for confirmed replacements.")
     inputs = pd.DataFrame([features(d, target, event, history, current, tracks) for d in drivers])
     grid_record = None
     grid_warnings = []
@@ -1296,6 +1321,7 @@ def run(args):
         folder / "section_rejections.csv", index=False)
     metadata = {"target": args.session, "event": event["EventName"], "as_of": now.isoformat(),
                 "used_sessions": list(current), "roster_source": roster_source,
+                "prediction_drivers": names, "practice_only_drivers": practice_only,
                 "weather": "diagnostic observations/scenarios only; not an active model input; no forecast API",
                 "manual_weather": {"air_temp": args.air_temp, "wet": args.wet},
                 "grid_source": grid_record['source'] if grid_record else "qualifying order when available",

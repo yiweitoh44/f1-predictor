@@ -37,6 +37,12 @@ List events (internet required):
   python predict_anytime.py --year 2026 --list-races
 Predict the Grand Prix:
   python predict_anytime.py --year 2026 --race Singapore --session race
+Use already-cached Singapore data without login or downloads:
+  python predict_anytime.py --year 2026 --race Singapore --session race --offline
+The required event schedule and session data must already be cached. If the
+scheduled start has passed, enter y to replay the pre-start prediction. Offline
+mode cannot obtain missing data for a new weekend. Keep existing caches; do not
+use --refresh with --offline. Fresh restricted timing still needs account access.
 Predict normal qualifying:
   python predict_anytime.py --year 2026 --race Singapore --session qualifying
 Predict Sprint Qualifying, if scheduled:
@@ -686,3 +692,42 @@ Raw API responses, caches, ZIPs, telemetry samples, analysis scripts, full drive
 comparisons and the authoritative tests stay outside Git. The uploaded archives
 are retained in the cloud for possible v3 work. Do not infer that a fresh cloud
 checkout contains the laptop's caches or that this cache is a pretrained model.
+
+V2 CLOSEOUT CORRECTIONS — 25 OCTOBER 2026
+FastF1 remains the timing provider. This version does not automatically switch
+to OpenF1 if login or downloading fails. Public published-grid sources remain
+FIA/F1/OpenF1 as before; that is separate from practice timing/history loading.
+
+FP1 reserve drivers no longer automatically replace competitive entrants. Use
+completed current competition where available, otherwise assume a full FP2/FP3
+lineup, otherwise carry the prior competitive entry list forward. Incomplete
+later practice does not remove known entrants. --roster confirms replacements;
+entry continuity before competitive data remains an assumption. The run prints
+and exports the roster basis and practice-only drivers.
+
+FIA grid publication times during the repeated autumn Paris hour use the later
+possible instant, preventing a crash and avoiding admitting the grid too early.
+
+No model weights changed. Normal-weekend qualifying retains effective75% history
+and25% practice within the85% explicit score;15% remains the learned adjustment.
+Six saved-FastF1 splits were tested across13 qualifying targets:75/25,60/40,
+50/50,40/60,25/75 and100/0. Current75/25 gave the lowest ranking error in this
+experiment:2.042 places on the same8 complete normal-weekend fields,3/9 normal
+pole picks and6/13 overall poles with corrected roster rules. This uses saved
+FP1 coverage, not a validated optimum for newly downloaded FP2/FP3 data.
+
+Earlier intersection-only qualifying comparisons could credit the wrong driver
+when the actual pole sitter was absent from a forecast. Those claims are
+superseded: original saved forecasts score8/13 actual poles, not9/13. They also
+included FP1 reserves. Corrected-roster reruns are a different baseline; never
+compare ranking errors across different driver fields without stating coverage.
+The cache remains usable without login when required files exist. Fresh account
+access must be verified by the account holder; cloud cached replays do not prove
+that an authenticated fresh download succeeds. Section telemetry stays disabled.
+
+Final V2 closeout verification:133 checks passed;48 OpenF1-only checks skipped.
+All34 real cached production runs passed (13GP,13Q,4Sprint,4SQ), with network
+requests blocked, unchanged model weights and section telemetry excluded. Their
+driver rankings match the corrected FastF1 baseline used for source comparisons.
+Cached loading was separately verified with login/session-download access blocked.
+Fresh authenticated downloading remains dependent on the user's eligible account.

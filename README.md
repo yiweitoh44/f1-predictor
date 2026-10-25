@@ -56,3 +56,17 @@ qualifying order on matching eligible weekends; Q/SQ use a history-only referenc
 Scoring is unchanged. Across 13 eligible GP replays, the mean-position display
 averaged 3.259 places out versus 3.510 for grid order, with both picking 8/13 winners.
 See START_HERE.txt for coverage, limitations and the effect of changing display order.
+
+## FastF1 v2 checkpoint
+
+Fresh timing downloads require FastF1 3.9+ and an F1TV Access-or-higher account; see
+START_HERE.txt for local authentication. Existing cached data can run offline:
+
+```powershell
+python predict_anytime.py --year 2026 --race Singapore --session race --offline
+```
+
+The schedule and required sessions must already be cached. No automatic OpenF1
+timing fallback is implemented. V2 retains its scoring weights and excludes
+section telemetry. FP1 reserve-driver selection and ambiguous FIA grid dates
+are handled explicitly; use `--roster` for confirmed entry changes.
