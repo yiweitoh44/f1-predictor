@@ -261,7 +261,7 @@ class GridStore:
             match=re.search(r'Published on (\d{2}\.\d{2}\.\d{2} \d{2}:\d{2})',text)
             if not match: continue
             # FIA labels its Paris wall clock "CET" throughout the year.
-            published=pd.to_datetime(match[1],format='%d.%m.%y %H:%M').tz_localize('Europe/Paris').tz_convert('UTC')
+            published=pd.to_datetime(match[1],format='%d.%m.%y %H:%M').tz_localize('Europe/Paris', ambiguous=False).tz_convert('UTC')
             if published>cutoff: continue
             url=urljoin(root,doc['url']);data,seen=self.get(url)
             try:
