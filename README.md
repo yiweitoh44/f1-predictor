@@ -33,10 +33,8 @@ See [START_HERE.txt](START_HERE.txt) for all commands, source cutoffs, derived l
 quality, output columns, validation limits and remaining work. Simulation shares
 are not calibrated real-world probabilities. Section telemetry stays disabled.
 
-Lap-quality audits now distinguish excluded laps from unverified evidence.
-Ambiguous deletion notices no longer discard a driver's later session laps.
-The recovered laps still pass the existing tyre, sector, flag and pit checks.
-
-The lap-quality recovery fix keeps earlier unidentified deletions unverified
-while allowing later laps to pass normal checks. Replays slightly reduced GP/Q
-ranking error without changing winner counts; exact FastF1 parity is unverified.
+Lap audits distinguish missing evidence from excluded laps. Pit entry/exit
+mapping and cache renewal are checked explicitly. FP1 reserve drivers no longer
+automatically replace the assumed competitive entrants; confirmed substitutions
+can be supplied with `--roster`. Historical comparisons use matching roster rules
+and actual winner identities. See START_HERE for results and remaining limits.

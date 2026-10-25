@@ -21,7 +21,9 @@ def stamp(value):
  return t.tz_convert('UTC')
 
 class Client:
- def __init__(self,root,offline=False,refresh=False):self.root=Path(root)/'openf1';self.offline=offline;self.refresh=refresh
+ def __init__(self,root,offline=False,refresh=False):self.root=Path(root)/'openf1';self.offline=offline;self.refresh=refresh;self.session_ends={}
+ def register_session(self,session):
+  if session.get('date_end'):self.session_ends[session['session_key']]=stamp(session['date_end']).timestamp()
  def get(self,endpoint,**params):
   global _LAST_REQUEST
   url=requests.Request('GET','https://api.openf1.org/v1/'+endpoint,params=sorted(params.items())).prepare().url
@@ -29,7 +31,12 @@ class Client:
   if path.exists() and (self.offline or not self.refresh):
    cached=json.loads(path.read_text())
    if cached['url']!=url:raise ValueError('OpenF1 cache identity mismatch')
-   if self.offline or time.time()-cached['fetched_unix']<900 or cached['data'] and endpoint not in {'sessions','meetings'} and 'session_key' in params:
+   # Nonempty is not proof of completeness. Recent sessions must refresh
+   # while timing/tyre corrections arrive; older data is also not immortal.
+   end=self.session_ends.get(params.get('session_key'))
+   settled=end is not None and cached['fetched_unix'] >= end + 2*86400
+   ttl=7*86400 if settled and cached['data'] and endpoint not in {'sessions','meetings'} else 900
+   if self.offline or time.time()-cached['fetched_unix']<ttl:
     return cached['data']
   if self.offline:raise ValueError('OpenF1 response not cached: '+endpoint)
   print(f"  OpenF1 download: {endpoint} {params}", flush=True)
@@ -46,6 +53,7 @@ class Client:
   raise ValueError('OpenF1 rate limit: retry later')
  def schedule(self,year):
   meetings=self.get('meetings',year=year);sessions=self.get('sessions',year=year);events=[]
+  self.session_ends.update({s['session_key']:stamp(s['date_end']).timestamp() for s in sessions if s.get('date_end')})
   meetings=sorted([m for m in meetings if not m.get('is_cancelled',False) and 'testing' not in m['meeting_name'].lower()],key=lambda m:m['date_start'])
   for rnd,m in enumerate(meetings,1):
    found=sorted([s for s in sessions if s['meeting_key']==m['meeting_key'] and not s.get('is_cancelled',False) and s['session_name'] in NAMES],key=lambda s:s['date_start'])
@@ -125,6 +133,31 @@ def deletion_evidence(laps, drivers, control, cutoff):
  return deleted, unknown_before
 
 
+def pit_laps(laps, pits, cutoff):
+ """Pit endpoint lap can identify either entry or exit. Use outlap evidence.
+
+ An exit lap n excludes n-1/n; an entry lap n followed by an exit n+1
+ excludes n/n+1, not the preceding clean lap. Unresolved records retain the
+ conservative n-1/n exclusion. Never use a future pit report at this cutoff.
+ """
+ outs={(r['driver_number'],r['lap_number']) for r in laps if r.get('is_pit_out_lap') is True and (not r.get('date_start') or stamp(r['date_start'])<=cutoff)}
+ excluded=set(outs)
+ excluded.update((num,n-1) for num,n in outs)
+ for pit in pits:
+  if pit.get('date') and stamp(pit['date'])>cutoff:
+   continue
+  n=pit.get('lap_number');num=pit['driver_number']
+  if n is None:
+   continue
+  if (num,n) in outs:
+   excluded.update({(num,n-1),(num,n)})
+  elif (num,n+1) in outs:
+   excluded.update({(num,n),(num,n+1)})
+  else:
+   excluded.update({(num,n-1),(num,n)})
+ return excluded
+
+
 def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
  """Derived validity, not an official IsAccurate flag; unknown stays rejected."""
  mapping={d['driver_number']:d['name_acronym'] for d in drivers};deleted,unknown_before=deletion_evidence(laps,drivers,control,cutoff);flags={};blocked=[];neutral_blocks=[];last=start
@@ -146,8 +179,7 @@ def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
  if flags:
   blocked.append((last,cutoff))
   if 'SC' in flags.values():neutral_blocks.append((last,cutoff))
- pitset={(r['driver_number'],n) for r in pits if r.get('lap_number') is not None for n in [r['lap_number']-1,r['lap_number']]}
- outs={(r['driver_number'],r['lap_number']) for r in laps if r.get('is_pit_out_lap') is True}
+ pitset=pit_laps(laps,pits,cutoff)
  ordered={(r['driver_number'],r['lap_number']):r for r in laps};duplicates=Counter((r['driver_number'],r['lap_number']) for r in laps);accepted=[];audit=[]
  for r in laps:
   num=r['driver_number'];n=r['lap_number'];pair=(num,n);reason=None;t=None;finish=None
@@ -157,14 +189,15 @@ def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
   else:
    t=stamp(r['date_start']);finish=t+pd.Timedelta(seconds=duration)
    if t<start or finish>cutoff:reason='outside cutoff'
-   elif pair in pitset or pair in outs or (num,n+1) in outs:reason='pit boundary'
+   elif pair in pitset:reason='pit boundary'
    elif deleted.get(pair,False):reason='deleted lap'
    elif num in unknown_before and t<=unknown_before[num]:reason='unresolved earlier deletion'
    elif any(t<b and finish>x for x,b in blocked):reason='flag/neutralisation interval'
    else:
     sectors=[r.get('duration_sector_'+str(i)) for i in [1,2,3]]
     tolerance=.0500001 if policy=='proxy' else .0030001
-    if not all(isinstance(x,(int,float)) and np.isfinite(x) and x>0 for x in sectors) or abs(sum(sectors)-duration)>tolerance:reason='sector sum mismatch'
+    if not all(isinstance(x,(int,float)) and np.isfinite(x) and x>0 for x in sectors):reason='missing sector timing'
+    elif abs(sum(sectors)-duration)>tolerance:reason='sector sum mismatch'
     elif policy=='strict':
      prev=ordered.get((num,n-1))
      if prev and prev.get('date_start') and isinstance(prev.get('lap_duration'),(int,float)):
@@ -173,11 +206,12 @@ def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
       elif any(p<b and pend>x for x,b in neutral_blocks):reason='previous lap affected by neutralisation'
   matches=[s for s in stints if s['driver_number']==num and s.get('lap_start') is not None and s.get('lap_end') is not None and s['lap_start']<=n<=s['lap_end']]
   if reason is None:
-   if len(matches)!=1:reason='ambiguous stint'
+   if not matches:reason='missing stint'
+   elif len(matches)>1:reason='ambiguous stint'
    else:
     s=matches[0];age=s.get('tyre_age_at_start')
-    if not isinstance(age,(int,float)) or age<0 or s.get('compound') not in {'SOFT','MEDIUM','HARD','INTERMEDIATE','WET'}:reason='unknown tyre'
-  state='valid_for_pace' if reason is None else 'unverified' if reason in {'missing timing','unknown tyre','ambiguous stint','unresolved earlier deletion','consecutive lap timing mismatch'} else 'excluded_from_pace'
+    if not isinstance(age,(int,float)) or not np.isfinite(age) or age<0 or s.get('compound') not in {'SOFT','MEDIUM','HARD','INTERMEDIATE','WET'}:reason='unknown tyre'
+  state='valid_for_pace' if reason is None else 'unverified' if reason in {'missing timing','missing sector timing','unknown tyre','missing stint','ambiguous stint','unresolved earlier deletion','consecutive lap timing mismatch'} else 'excluded_from_pace'
   audit.append(dict(driver=mapping.get(num,str(num)),lap_number=n,accepted=reason is None,quality_state=state,reason=reason or 'passed derived checks'))
   if reason is None:
    accepted.append(dict(Driver=mapping[num],Compound=s['compound'],TyreLife=age+n-s['lap_start']+1,FreshTyre=age==0,LapNumber=n,Stint=s['stint_number'],LapStartTime=t-start,lap_seconds=duration))
@@ -192,7 +226,7 @@ class Store:
   session=event.get(code+'_openf1')
   if not isinstance(session,dict) or stamp(session['date_start'])>=self.now:return None
   if stamp(session['date_end'])>=self.now:return None
-  key=session['session_key'];start=stamp(session['date_start'])
+  key=session['session_key'];start=stamp(session['date_start']);self.client.register_session(session)
   def get(endpoint):
    data=self.client.get(endpoint,session_key=key)
    if any(r.get('meeting_key')!=session['meeting_key'] for r in data):raise ValueError('OpenF1 meeting identity mismatch')

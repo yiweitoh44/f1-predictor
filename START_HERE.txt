@@ -51,8 +51,11 @@ Raw OpenF1 responses are cached under ~/F1Data/cache/openf1/http. On Windows:
 The first cold run can take several minutes because it loads prior weekends.
 Requests are spaced to respect OpenF1's free-tier limits and rate-limit
 responses are retried. Downloads print their endpoint/session progress.
-Metadata/empty responses are renewed periodically; completed-session responses
-are reused unless --refresh is requested. No old FastF1 summaries are consumed.
+Metadata, empty responses and recent-session responses expire after 15 minutes.
+Responses fetched at least 48 hours after session end can be reused for seven
+days. Nonempty responses are not assumed complete. --refresh renews them sooner;
+--offline preserves cached responses regardless of age. No old FastF1 summaries
+are consumed.
 
 --offline forbids all downloads, including grid sources. Required metadata must
 already be cached. --refresh renews source responses and cannot be combined with
@@ -65,8 +68,8 @@ LAP QUALITY
 lap_quality.csv records accepted/rejected current-session laps and reasons.
 These are derived checks, NOT an official IsAccurate flag from the provider.
 Reject missing/nonfinite timing, duplicate lap identities, pit boundaries,
-deleted laps, active flags/neutralisation, ambiguous stints and unknown tyre
-information. Sector sums must match lap duration within 3 milliseconds.
+deleted laps, active flags/neutralisation, missing/conflicting stints and unknown
+tyre information. Missing sectors are unverified, distinct from inconsistent sums. Sector sums must match lap duration within 3 milliseconds.
 Deletion resolution uses the driver and lap stated in the message, or a unique
 lap-time match. race_control.lap_number is the message's current race lap, not
 necessarily the deleted lap; it is not used as a deletion target.
@@ -77,6 +80,9 @@ clock allowance, not a guarantee of identical timestamps across sources. An
 ambiguous reinstatement cannot validate multiple candidate laps. Pit-out durations
 can include garage time before date_start, so start+duration is not treated as a
 reliable outlap crossing time when resolving a deletion. Outlaps remain excluded.
+Pit lap numbering can refer to entry or exit: use explicit outlap evidence to
+exclude the entry/exit pair without also discarding an earlier clean lap. Unknown
+pit conventions stay conservative; future pit reports are not used.
 The quality_state column separates valid_for_pace, excluded_from_pace and
 unverified. Unknown evidence is not described as proven invalid.
 
@@ -131,28 +137,46 @@ model formula is fixed. More available FP2 data is a coverage change, not proof
 that a provider is inherently more accurate. Sparse Sprint tests and revised
 historical records limit conclusions. Never tune to a known winner or favourite.
 
-Earlier matched-pace experiment (24 October 2026): 13 GPs retained 8/13 winner
-picks and 3.259 average places out with OpenF1 pace throughout, versus the saved
-FastF1 baseline; podium hits fell 25/39 to 23/39. Q pole picks fell 9/13 to 7/13.
-That experiment retained classifications and used matched FP1/Sprint coverage;
-it was NOT a fully OpenF1-only test and must not be labelled as one.
-Full-source migration checks: 140 retained-model/new-source tests passed. Sixteen
-production replays ran with FastF1 imports blocked and network requests forbidden
-(after caching genuine OpenF1 responses). All 374 GP driver results across 17
-weekends matched the independent published finishing-order sequence. Null numeric
-positions for retired entries retain that internally validated provider sequence;
-raw reported positions and derived-order flags are distinct.
+Current checks: 176 tests pass. Historical replays block FastF1 imports and
+network access after genuine source responses have been cached. Source fixes
+recover seven Sprint laps in the 23-session FP1/Sprint inventory (7,563 to 7,570).
+Hungary selected reference: all 132 lap durations match exactly; 130 now pass.
+Two remain unverified for unknown tyres or missing sector timing. This positive
+sample cannot measure false acceptance or prove universal provider equivalence.
 
-Full-source GP comparison: 8/13 winner picks, 24/39 podium drivers, 3.273 average
-places out; the old mean-order baseline was 8/13, 25/39, 3.259. The latest
-Singapore race backtest is 6/8 with 3.125 error; Q is 4/8 with 2.075 error.
-Texas before FP3/Q: pole order VER/RUS/NOR/HAD/LEC; race VER/ANT/LEC/HAD/HAM.
-These are early-stage experimental predictions. The full-source history also has
-more FP2 coverage than the old cache, so this is not a pure lap-quality comparison.
-Stage-matched Texas reports remain weak (Q 1/8, Race 2/8). See the PR/report
-for hybrid and diagnostic continuity-check results. Do not select a filtering
-policy because it produces a preferred driver order.
-Tests and raw analysis reports remain outside Git, per project preference.
+Earlier qualifying comparisons overstated FastF1 performance: FP1 reserves
+replaced regular entrants, and intersection-only scoring could promote the best
+remaining actual driver to a false pole hit. Original saved forecasts score 8/13
+actual poles, not 9/13. New source comparisons use the same roster policy on both
+sides, actual winner/podium identities, and exclude incomplete fields from rank
+error. They do not silently promote a runner-up when the winner is missing.
+
+With the roster fix on both sources, all 13 GP forecasts: FastF1 8/13 winners,
+25/39 podium drivers, 3.259 error; OpenF1 9/13, 25/39, 3.245. Q first picks:
+FastF1 6/13, OpenF1 8/13; top-three hits 24/39 versus 19/39. For the same 12 Q
+events with complete classified-driver coverage, error is 1.854 on both sources.
+The thirteenth legacy forecast lacks a replacement driver and is excluded from
+that ranking comparison. OpenF1 uses additional historical FP2/FP3 evidence;
+this is not proof of inherently better timing. Sprint: 2/4 versus 3/4 winners,
+2.455 error each; SQ remains 0/4, with only three complete fields for rank error.
+All historical comparisons exclude Austin. These small, exploratory samples do
+not establish a statistically reliable advantage. Reports/tests stay outside Git.
+
+ROSTER
+Prefer completed current-weekend competitive entries. Otherwise a full FP2/FP3
+lineup is assumed to be entered; FP1 reserves do not replace the last competitive
+entry list. Incomplete later practice keeps the previous competitive roster.
+Without a current competitive/full later-practice list, driver/team continuity
+is an assumption. Use --roster for confirmed replacements, especially before SQ.
+A manual CSV has driver,team and optional name columns. No later target-session
+entry list is fetched to resolve a pre-session uncertainty. run_info.json records
+the prediction entrants, roster basis and practice-only drivers.
+
+Remaining source limits: some OpenF1 tyre ages/freshness disagree with the saved
+FastF1 sample; age==0 is a freshness proxy, not FastF1's explicit New field.
+Some stints/sectors are absent. Practice phase uses elapsed scheduled-session
+time, unlike FastF1's feed-relative clock. Exact phase/tyre parity is unverified;
+missing fields are not invented or checks weakened to favour a known result.
 
 SOURCES AND CREDITS
 OpenF1: https://openf1.org/ (public historical API, unofficial project).
@@ -160,36 +184,3 @@ Retain original project attribution in README. Data/API availability and provide
 terms apply. Raw caches, login tokens, ZIPs and reports do not belong in Git.
 Deferred: section telemetry corrections, early-season fallback, sophisticated
 recovery, calibrated probabilities and live-session prediction updates.
-
-LAP-QUALITY RECOVERY CHECK (24 OCTOBER 2026)
-152 retained model/source tests passed. The first adapter discarded an entire
-driver's session for an unidentified deletion; later laps are now checked
-individually. In the matched historical FP1/Sprint sample, 48 additional laps
-pass all existing checks (7,515 to 7,563). Austin FP1 increases 202 to 240, FP2
-278 to 333. No model parameters or classification labels were changed.
-
-The saved Hungary selected-lap sample supplies 132 previously accurate laps.
-All 132 OpenF1 lap durations match exactly; 128 pass the corrected adapter versus
-108 before. The remaining four are unknown tyre information, a sector-sum
-inconsistency or pit-boundary evidence. This selected positive-only sample
-cannot establish false-acceptance rates or Austin-specific FastF1 parity.
-The historical before/after and Texas results are in the PR and external report.
-
-LAP-QUALITY RECOVERY CHECK (24 OCTOBER 2026)
-152 tests and 72 event/variant replays passed with FastF1 imports blocked.
-Training labels and grid inputs were preserved in every before/after pair.
-In the matched FP1/Sprint sample, accepted laps increase 7,515 to 7,563.
-Texas FP1 increases 202 to 240; FP2 increases 278 to 333.
-The saved Hungary selected-lap sample matches OpenF1 lap durations exactly in
-all 132 cases; checks now accept 128 versus 108 before. Four remain excluded
-for unknown tyres, inconsistent sectors or pit boundaries. A selected positive
-sample cannot establish false-acceptance rates or Texas-specific FastF1 parity.
-
-Before -> after recovery, same OpenF1 data/model settings:
-  GP: 8/13 winners unchanged; 24/39 podium drivers unchanged; error 3.273 -> 3.266.
-  Q: 7/13 poles unchanged; 19/39 top-three unchanged; error 2.076 -> 2.062.
-  Sprint: 2/4 -> 3/4 winners; 10/12 top-three unchanged; error 2.477 -> 2.455.
-  SQ: 0/4 unchanged; error 1.982 unchanged.
-These small samples do not establish a statistically reliable accuracy gain.
-The current Texas prediction and all per-driver comparisons are in the external
-report. No model weights, driver bonuses or section features were changed.
