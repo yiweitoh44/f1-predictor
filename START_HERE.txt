@@ -42,6 +42,8 @@ what was originally published: this is not an original-snapshot archive.
 The published starting-grid policy remains FIA documents first, then dated or
 observed F1/OpenF1 records, with qualifying order as fallback. Manual --grid and
 --grid-source qualifying still work. These sources do not use FastF1.
+FIA publication times in the repeated autumn Paris hour use the later UTC
+instant, so a grid is never admitted using the earlier ambiguous interpretation.
 Pit-lane starters retain the existing back-of-field scoring treatment; actual
 exit order and delay are not modelled. Historical missing grid values remain
 missing for the benchmark rather than being invented.
@@ -137,7 +139,7 @@ model formula is fixed. More available FP2 data is a coverage change, not proof
 that a provider is inherently more accurate. Sparse Sprint tests and revised
 historical records limit conclusions. Never tune to a known winner or favourite.
 
-Current checks: 176 tests pass. Historical replays block FastF1 imports and
+Current checks: 177 tests pass. Historical replays block FastF1 imports and
 network access after genuine source responses have been cached. Source fixes
 recover seven Sprint laps in the 23-session FP1/Sprint inventory (7,563 to 7,570).
 Hungary selected reference: all 132 lap durations match exactly; 130 now pass.
