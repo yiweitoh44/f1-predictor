@@ -12,7 +12,7 @@ _LAST_REQUEST=0.
 
 def save(path,data):
  path.parent.mkdir(parents=True,exist_ok=True)
- with tempfile.NamedTemporaryFile('w',dir=path.parent,delete=False,encoding='utf-8') as f:json.dump(data,f,allow_nan=False);name=f.name
+ with tempfile.NamedTemporaryFile('w',dir=path.parent,delete=False,encoding='utf-8') as f:json.dump(data,f,sort_keys=True,separators=(',',':'),allow_nan=False);name=f.name
  os.replace(name,path)
 
 def stamp(value):
@@ -21,13 +21,28 @@ def stamp(value):
  return t.tz_convert('UTC')
 
 class Client:
- def __init__(self,root,offline=False,refresh=False):self.root=Path(root)/'openf1';self.offline=offline;self.refresh=refresh;self.session_ends={}
+ def __init__(self,root,offline=False,refresh=False):self.root=Path(root)/'openf1';self.offline=offline;self.refresh=refresh;self.session_ends={};self.provenance={}
+ def remember(self,record,used=True):
+  """Keep immutable observed responses, not a claim of historical availability."""
+  encoded=json.dumps(record,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+  digest=hashlib.sha256(encoded).hexdigest()
+  relative=Path('snapshots')/(digest+'.json')
+  snapshot=self.root/relative
+  if not snapshot.exists():save(snapshot,record)
+  if used:
+   self.provenance[record['url']]=dict(url=record['url'],fetched_unix=record['fetched_unix'],
+       records=len(record['data']),sha256=digest,snapshot=str(relative))
+  return record['data']
  def register_session(self,session):
   if session.get('date_end'):self.session_ends[session['session_key']]=stamp(session['date_end']).timestamp()
  def get(self,endpoint,**params):
   global _LAST_REQUEST
   url=requests.Request('GET','https://api.openf1.org/v1/'+endpoint,params=sorted(params.items())).prepare().url
   path=self.root/'http'/(hashlib.sha256(url.encode()).hexdigest()+'.json')
+  if path.exists() and self.refresh and not self.offline:
+   previous=json.loads(path.read_text())
+   if previous['url']!=url:raise ValueError('OpenF1 cache identity mismatch')
+   self.remember(previous,used=False)
   if path.exists() and (self.offline or not self.refresh):
    cached=json.loads(path.read_text())
    if cached['url']!=url:raise ValueError('OpenF1 cache identity mismatch')
@@ -37,7 +52,8 @@ class Client:
    settled=end is not None and cached['fetched_unix'] >= end + 2*86400
    ttl=7*86400 if settled and cached['data'] and endpoint not in {'sessions','meetings'} else 900
    if self.offline or time.time()-cached['fetched_unix']<ttl:
-    return cached['data']
+    return self.remember(cached)
+   self.remember(cached,used=False)
   if self.offline:raise ValueError('OpenF1 response not cached: '+endpoint)
   print(f"  OpenF1 download: {endpoint} {params}", flush=True)
   for attempt in range(4):
@@ -45,11 +61,11 @@ class Client:
    r=requests.get(url,timeout=(5,25))
    if r.status_code==429:time.sleep(min(30,max(5,float(r.headers.get('Retry-After','10')))));continue
    if r.status_code==404:
-    save(path,dict(url=url,fetched_unix=time.time(),data=[]));return []
+    record=dict(url=url,fetched_unix=time.time(),data=[]);save(path,record);return self.remember(record)
    r.raise_for_status();data=r.json()
    if not isinstance(data,list) or not all(isinstance(x,dict) for x in data):raise ValueError('Invalid OpenF1 response')
    if 'session_key' in params and any(x.get('session_key')!=params['session_key'] for x in data):raise ValueError('OpenF1 session identity mismatch')
-   save(path,dict(url=url,fetched_unix=time.time(),data=data));return data
+   record=dict(url=url,fetched_unix=time.time(),data=data);save(path,record);return self.remember(record)
   raise ValueError('OpenF1 rate limit: retry later')
  def schedule(self,year):
   meetings=self.get('meetings',year=year);sessions=self.get('sessions',year=year);events=[]
@@ -212,14 +228,22 @@ def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
     s=matches[0];age=s.get('tyre_age_at_start')
     if not isinstance(age,(int,float)) or not np.isfinite(age) or age<0 or s.get('compound') not in {'SOFT','MEDIUM','HARD','INTERMEDIATE','WET'}:reason='unknown tyre'
   state='valid_for_pace' if reason is None else 'unverified' if reason in {'missing timing','missing sector timing','unknown tyre','missing stint','ambiguous stint','unresolved earlier deletion','consecutive lap timing mismatch'} else 'excluded_from_pace'
-  audit.append(dict(driver=mapping.get(num,str(num)),lap_number=n,accepted=reason is None,quality_state=state,reason=reason or 'passed derived checks'))
+  tyre=matches[0] if len(matches)==1 else {}
+  initial_age=tyre.get('tyre_age_at_start')
+  age_known=isinstance(initial_age,(int,float)) and np.isfinite(initial_age) and initial_age>=0
+  audit.append(dict(driver=mapping.get(num,str(num)),lap_number=n,accepted=reason is None,quality_state=state,reason=reason or 'passed derived checks',
+      compound=tyre.get('compound'),stint=tyre.get('stint_number'),
+      tyre_age_at_start=initial_age if age_known else None,
+      derived_tyre_life=initial_age+n-tyre['lap_start']+1 if age_known else None,
+      freshness_basis='age-at-start proxy; explicit new/used flag unavailable' if age_known else 'unknown',
+      scheduled_elapsed_seconds=(t-start).total_seconds() if t is not None else None))
   if reason is None:
    accepted.append(dict(Driver=mapping[num],Compound=s['compound'],TyreLife=age+n-s['lap_start']+1,FreshTyre=age==0,LapNumber=n,Stint=s['stint_number'],LapStartTime=t-start,lap_seconds=duration))
  return pd.DataFrame(accepted,columns=['Driver','Compound','TyreLife','FreshTyre','LapNumber','Stint','LapStartTime','lap_seconds']),audit
 
 class Store:
  def __init__(self,client,year,now,pace_function,policy='standard'):
-  self.client=client;self.year=year;self.now=now;self.pace_function=pace_function;self.policy=policy;self.unavailable=[];self.memory={}
+  self.client=client;self.year=year;self.now=now;self.pace_function=pace_function;self.policy=policy;self.unavailable=[];self.warnings=[];self.memory={}
  def get(self,event,code):
   rnd=int(event['RoundNumber']);identity=(rnd,code)
   if identity in self.memory:return self.memory[identity]
@@ -268,10 +292,17 @@ class Store:
      finished=None if not all(k in result for k in ['dnf','dns','dsq']) else float(not any(result[k] for k in ['dnf','dns','dsq']))
      row.update(finished=finished,laps_completed_fraction=(result.get('number_of_laps') or 0)/race_laps if race_laps else None,finish_gap_pct=None,grid_gain_norm=(grid[num]-pos)/(n-1) if grid.get(num) and pos else None,neutralized_lap_fraction=None)
     records.append(row)
-   weather=get('weather') if code.startswith('FP') or code=='S' else [];observed={}
-   for local,remote in [('AirTemp','air_temperature'),('TrackTemp','track_temperature'),('Rainfall','rainfall')]:
-    vals=[r[remote] for r in weather if r.get(remote) is not None and start<=stamp(r['date'])<self.now]
-    observed[local]=float(max(vals) if local=='Rainfall' else np.median(vals)) if vals else None
+   observed=dict(AirTemp=None,TrackTemp=None,Rainfall=None)
+   try:
+    weather=get('weather') if code.startswith('FP') or code=='S' else []
+    for local,remote in [('AirTemp','air_temperature'),('TrackTemp','track_temperature'),('Rainfall','rainfall')]:
+     vals=[r[remote] for r in weather if r.get(remote) is not None and start<=stamp(r['date'])<self.now]
+     observed[local]=float(max(vals) if local=='Rainfall' else np.median(vals)) if vals else None
+   except (ValueError,KeyError,TypeError,OSError,requests.RequestException) as exc:
+    # Weather is diagnostic. Its outage must not discard validated lap pace.
+    observed=dict(AirTemp=None,TrackTemp=None,Rainfall=None)
+    self.warnings.append(dict(round=rnd,session=code,endpoint='weather',reason=str(exc)))
+    print(f'  R{rnd} {code}: weather unavailable; retaining validated pace.',flush=True)
    data=dict(code=code,drivers=records,weather=observed,lap_data_loaded=lapdata,pace_summary_version=2,section_analysis={'enabled':False},source='OpenF1',quality_policy=self.policy,lap_quality_audit=audit)
    self.memory[identity]=data;return data
   except (ValueError,KeyError,TypeError,OSError,requests.RequestException) as exc:

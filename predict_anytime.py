@@ -844,7 +844,8 @@ def run(args):
         now = pd.to_datetime(args.as_of, utc=True, errors="raise")
         if now > pd.Timestamp.now(tz="UTC"):
             raise ValueError("--as-of cannot be in the future.")
-    schedule = openf1_data.Client(CACHE_ROOT, args.offline, args.refresh).schedule(args.year)
+    schedule_client = openf1_data.Client(CACHE_ROOT, args.offline, args.refresh)
+    schedule = schedule_client.schedule(args.year)
     schedule = schedule[schedule.RoundNumber > 0].sort_values("RoundNumber")
     if args.list_races:
         print(schedule[["RoundNumber", "EventName", "Location"]].to_string(index=False))
@@ -879,6 +880,7 @@ def run(args):
     tracks = read_tracks(args.tracks)
     store = Store(args.year, now, args.refresh, args.offline,
                   getattr(args, "rebuild_summaries", False))
+    store.client.provenance.update(schedule_client.provenance)
     print(f"Target: {args.year} {event['EventName']} / {args.session}. Cutoff: {now.isoformat()}")
     current = {}
     for code in allowed:
@@ -890,6 +892,8 @@ def run(args):
         audit = data.get('lap_quality_audit', [])
         if audit:
             print(f"  {code} OpenF1 derived lap quality: {sum(r['accepted'] for r in audit)}/{len(audit)} accepted ({data.get('quality_policy')}).")
+            unknown = sum(r.get('quality_state') == 'unverified' for r in audit)
+            print(f"  {code} missing/unverified evidence: {unknown} laps; reasons in lap_quality.csv.")
         if code.startswith("FP") or code == "S":
             short = sum(
                 number(d.get("short_matched_laps", 0)) > 0
@@ -1028,7 +1032,8 @@ def run(args):
     folder.mkdir(parents=True, exist_ok=True)
     quality_rows = [dict(session=code, policy=data.get('quality_policy'), **row)
                     for code, data in current.items() for row in data.get('lap_quality_audit', [])]
-    pd.DataFrame(quality_rows, columns=['session','policy','driver','lap_number','accepted','quality_state','reason']).to_csv(
+    pd.DataFrame(quality_rows, columns=['session','policy','driver','lap_number','accepted','quality_state','reason',
+        'compound','stint','tyre_age_at_start','derived_tyre_life','freshness_basis','scheduled_elapsed_seconds']).to_csv(
         folder / 'lap_quality.csv', index=False)
     output.to_csv(folder / "predictions.csv", index=False)
     simulation_details.to_csv(folder / 'simulation_details.csv', index=False)
@@ -1096,9 +1101,16 @@ def run(args):
     for rnd, location, sessions in diagnostic_sessions:
         for code, data in sessions.items():
             origin = {"year": args.year, "round": rnd, "location": location, "session": code}
+            audit = data.get('lap_quality_audit', [])
             session_coverage.append({**origin, "lap_data_loaded": data.get("lap_data_loaded", False),
+                                     "raw_laps": len(audit),
+                                     "accepted_laps": sum(r['accepted'] for r in audit),
+                                     "unverified_laps": sum(r.get('quality_state') == 'unverified' for r in audit),
+                                     "usable_short_drivers": sum(np.isfinite(influence.pace_score(d['driver'], data, ('short',))) for d in data['drivers']),
+                                     "usable_long_drivers": sum(np.isfinite(influence.pace_score(d['driver'], data, ('long',))) for d in data['drivers']),
                                      "section_status": "disabled",
                                      "pace_summary_version": data.get("pace_summary_version", 1)})
+    pd.DataFrame(session_coverage).to_csv(folder / 'data_coverage.csv', index=False)
     cohort_columns = ["year", "round", "location", "session", "reference_driver", "reference_lap",
                       "driver", "section", "kind", "start", "end", "compound", "fresh",
                       "age_band", "phase", "condition", "peer_drivers", "drivers", "laps",
@@ -1139,6 +1151,7 @@ def run(args):
                 "data_provider": "OpenF1; no FastF1 runtime or timing-cache dependency",
                 "lap_quality": "derived OpenF1 checks, not an official IsAccurate flag; see lap_quality.csv",
                 "unavailable_sessions": store.unavailable,
+                "source_warnings": store.warnings,
                 "session_data_coverage": session_coverage,
                 "data_coverage": coverage,
                 "section_analysis": {"enabled": False,
@@ -1146,6 +1159,12 @@ def run(args):
                     "status": "disabled; legacy diagnostic evidence ignored"},
                 "tracks": tracks, "upgrades": "not separately measured or modelled",
                 "historical_data": "current published revisions, not archived as-of snapshots"}
+    source_manifest = dict(provider='OpenF1',
+        archive_root=str(store.client.root),
+        interpretation='Observed download snapshots; fetched_unix is not the original publication time.',
+        responses=list(store.client.provenance.values()))
+    openf1_data.save(folder / 'source_manifest.json', source_manifest)
+    metadata['source_manifest'] = 'source_manifest.json'
     (folder / "run_info.json").write_text(json.dumps(json_safe(metadata), indent=2), encoding="utf-8")
     print("\nPrediction ordered by mean simulated position. Shares are experimental, not calibrated probabilities.")
     if target in RACE_TYPES:

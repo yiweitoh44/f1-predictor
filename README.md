@@ -38,3 +38,15 @@ mapping and cache renewal are checked explicitly. FP1 reserve drivers no longer
 automatically replace the assumed competitive entrants; confirmed substitutions
 can be supplied with `--roster`. Historical comparisons use matching roster rules
 and actual winner identities. See START_HERE for results and remaining limits.
+
+## v3 development and the v2 checkpoint
+
+The [v2 release](https://github.com/yiweitoh44/f1-predictor/releases/tag/v2)
+preserves the FastF1-based predictor. This branch develops the OpenF1 version;
+it does not read FastF1 caches or require an F1TV account.
+
+Each run now exports `data_coverage.csv` and `source_manifest.json` beside the
+prediction files. The manifest identifies the downloaded responses used, and
+local snapshots preserve them when the cache refreshes. These are observations
+from download time, not proof of what was available at an earlier race cutoff.
+See START_HERE.txt for the data limitations and qualifying experiments.

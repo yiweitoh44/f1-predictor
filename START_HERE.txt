@@ -139,7 +139,7 @@ model formula is fixed. More available FP2 data is a coverage change, not proof
 that a provider is inherently more accurate. Sparse Sprint tests and revised
 historical records limit conclusions. Never tune to a known winner or favourite.
 
-Current checks: 177 tests pass. Historical replays block FastF1 imports and
+Current checks: 182 tests pass; four FastF1-only tests skip. Historical replays block FastF1 imports and
 network access after genuine source responses have been cached. Source fixes
 recover seven Sprint laps in the 23-session FP1/Sprint inventory (7,563 to 7,570).
 Hungary selected reference: all 132 lap durations match exactly; 130 now pass.
@@ -186,3 +186,91 @@ Retain original project attribution in README. Data/API availability and provide
 terms apply. Raw caches, login tokens, ZIPs and reports do not belong in Git.
 Deferred: section telemetry corrections, early-season fallback, sophisticated
 recovery, calibrated probabilities and live-session prediction updates.
+
+V3 DATA AUDIT AND REPRODUCIBILITY
+The v2 tag preserves the FastF1-based version. OpenF1 supplies this branch's
+session data; FIA/F1/OpenF1 published-grid selection remains separate.
+
+Every downloaded or reused OpenF1 response is saved in a content-addressed
+snapshot under ~/F1Data/cache/openf1/snapshots. source_manifest.json beside the
+prediction identifies the URL, download time, record count, snapshot path and
+SHA-256 for each response used. A refresh preserves the previous response before
+replacing the active cache. Snapshots consume disk space as sources change;
+keep them when preserving a prediction. They are never uploaded to Git.
+Existing responses only establish their recorded fetch time. We cannot recreate
+an original pre-race publication from a newer historical download. The snapshot
+archive does not automatically choose old responses for --as-of runs.
+
+--offline uses the active local response cache and forbids downloads:
+  python predict_anytime.py --year 2026 --race Singapore --session race --offline
+It requires previously downloaded OpenF1 sessions and metadata; a FastF1 cache
+alone is insufficient. Keep the entire cache/openf1 directory when moving it.
+
+lap_quality.csv also shows the reported stint, initial tyre age, derived tyre
+life, freshness assumption and elapsed seconds from scheduled session start.
+data_coverage.csv reports raw/accepted/unverified lap counts and drivers with
+usable short/long pace for current and historical inputs. Zero laps for Q/R
+means this version uses classifications there, not that the race had no laps.
+
+KNOWN SOURCE LIMITS
+OpenF1's stint parser takes the first available TimingAppData TotalLaps value
+as tyre_age_at_start. It does not expose that feed's explicit new/used tyre flag.
+Our age==0 freshness grouping is a proxy, not verified FastF1 FreshTyre parity.
+Missing/conflicting stints remain unknown; we do not invent tyre ages.
+OpenF1 can infer a missing lap duration from its sectors. A matching sector sum
+therefore establishes internal consistency, not independent timing verification.
+Its lap starts are message timestamps and do not support a universal 3-ms
+consecutive-lap test. Accepted means passed our derived checks, not guaranteed
+fuel/traffic/engine-mode equivalence. Those programmes are unknown in FastF1 too.
+Upstream code examined:
+  https://github.com/br-g/openf1/tree/87540e3f495bbd9bedb37b10456dd848c8f193d6/src/openf1/services/ingestor_livetiming/core/processing/collections
+
+Practice phases use ten-minute bins from scheduled start. FastF1 uses a different
+feed-relative origin. The available raw comparison sample is Hungary RACE:
+its feed origin is 3049.658 seconds before scheduled start. That does not establish
+a practice-session offset. Race/Sprint comparisons use lap-number bins, so this
+clock difference does not change those bins. No arbitrary clock correction is
+applied to practice. Fuel correction and section telemetry remain disabled.
+
+BACKUP SOURCES
+Jolpica (https://github.com/jolpica/jolpica-f1) and F1DB
+(https://github.com/f1db/f1db) offer useful results archives, but are not equivalent
+practice-lap/tyre feeds. F1API (https://f1api.dev/) offers session classifications;
+latest-session availability must be checked. On 25 October 2026, Jolpica's Austin
+qualifying query returned zero results, F1API's Austin FP3 query returned 404,
+and F1DB's latest release covered round 17. LiveF1 also depends on F1's timing
+access. No automatic substitute for missing OpenF1 practice data is enabled.
+Local snapshots protect data already fetched; they cannot supply a future
+session if its upstream service becomes unavailable.
+
+A missing weather endpoint now leaves weather unknown while retaining otherwise
+validated practice/Sprint evidence. The warning is recorded in run_info.json.
+Required lap, tyre and race-control failures still prevent unverified pace from
+being admitted. This resilience fix does not alter complete-cache predictions.
+
+V3 QUALIFYING EXPERIMENTS (26 OCTOBER 2026)
+Nine configurations were replayed across the same 13 Q and four SQ targets,
+153 forecasts total. Each fit uses earlier weekends. Austin was excluded from
+choosing settings. These are revised historical records and small retrospective
+comparisons, not an untouched test set. Lower places out is better.
+
+Configuration                  Q poles/13  Q places out  SQ poles/4  SQ places out
+Current settings                  8          1.950          0          1.885
+Normal Q history/practice 60/40    7          2.050          0          1.885
+Normal Q history/practice 50/50    7          2.150          0          1.885
+Normal Q history/practice 90/10    7          2.076          0          1.885
+SQ history/practice 50/50          8          1.950          0          2.342
+Ignore freshness grouping         8          2.062          0          1.915
+Two short laps per matched group  3          2.131          0          1.700
+Shift practice windows +60 sec    6          2.007          0          1.885
+Separate learned FP1/FP2/FP3       8          1.971          0          1.885
+
+SQ ranking error covers three complete fields; pole picks use actual identities
+on all four. Current settings retain normal Q's effective 75/25 history/practice
+split and SQ's 85/15. Experiments are not enabled. Two-lap SQ support improves two
+complete fields and ties one, but does not improve pole picks; further independent
+evidence is needed. The clock trial is sensitivity analysis, not a verified fix.
+All 17 Race/Sprint prediction tables match the prior OpenF1 baseline exactly.
+Fresh Austin FP3 lap/stint and Q-result downloads succeeded without login and
+matched cached content. Offline Austin commands and source-manifest hashes were
+checked. Source investigation does not establish universal FastF1 parity.
