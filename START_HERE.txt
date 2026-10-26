@@ -139,7 +139,7 @@ model formula is fixed. More available FP2 data is a coverage change, not proof
 that a provider is inherently more accurate. Sparse Sprint tests and revised
 historical records limit conclusions. Never tune to a known winner or favourite.
 
-Current checks: 182 tests pass; four FastF1-only tests skip. Historical replays block FastF1 imports and
+Current checks: 186 tests pass; four FastF1-only tests skip. Historical replays block FastF1 imports and
 network access after genuine source responses have been cached. Source fixes
 recover seven Sprint laps in the 23-session FP1/Sprint inventory (7,563 to 7,570).
 Hungary selected reference: all 132 lap durations match exactly; 130 now pass.
@@ -274,3 +274,40 @@ All 17 Race/Sprint prediction tables match the prior OpenF1 baseline exactly.
 Fresh Austin FP3 lap/stint and Q-result downloads succeeded without login and
 matched cached content. Offline Austin commands and source-manifest hashes were
 checked. Source investigation does not establish universal FastF1 parity.
+
+V3 FLAG-QUALITY FOLLOW-UP
+VSC DEPLOYED is now recognised explicitly. A VSC ENDING notice alone does not
+release pace: wait for the subsequent track-clear or green message. Likewise,
+Safety Car in this lap followed by track clear can establish release; a random
+track-clear message cannot release a deployed SC. A red flag remains active
+until a green signal or SESSION STARTED, even if the track is reported clear.
+Control messages are sorted by parsed UTC time, including mixed timestamp
+precisions/offsets. Future messages cannot release a restriction at an earlier
+cutoff. Missing release evidence stays conservative.
+The corrected audit excludes 15 additional practice laps across rounds 1–18;
+Sprint accepted-lap counts are unchanged after checking the restart messages.
+
+The 27 October flag follow-up has 190 discovered tests: 186 pass, four skip.
+Across the original 13 GP and four Sprint targets the winner/ranking totals are
+unchanged. Singapore Race swaps only Albon/Alonso at P18/P19; aggregate ranking
+error is unchanged. Singapore Sprint means move slightly without changing order.
+Qualifying remains 8/13 and 1.950 places out. SQ remains 0/4, with ranking error
+1.915 over three complete fields (previously 1.885). Quality corrections are kept
+for the identified flag-state errors, not presented as predictive improvements.
+
+Austin Race was excluded from choosing the follow-up changes. Both the existing
+and corrected forecasts were hashed before fetching its outcome. Both pick
+Antonelli correctly, find two podium drivers and average 2.182 places out.
+This single additional result does not establish reliability. Future Q/SQ checks
+must freeze the chosen method before the weekend, save forecasts with only
+pre-target inputs, and score them after the sessions. Historical races already
+examined are not described as untouched holdouts.
+
+Additional qualifying trials (13 Q / four SQ each; all disabled):
+  Soft preference: Q 7/13, 1.964 places out; SQ 0/4, 1.915.
+  Single attempt with >=4 usable peers: Q 5/13, 2.006; SQ 0/4, 1.985.
+  Two staggered time windows: Q 7/13, 2.020; SQ 0/4, 1.885.
+  Connected common-reference comparisons: Q 5/13, 2.042; SQ 0/4, 1.912.
+Each fit uses earlier weekends. SQ ranking errors cover three complete fields.
+These alternatives do not establish a convincing overall improvement. Production
+weights, practice scoring and native model inputs are retained.

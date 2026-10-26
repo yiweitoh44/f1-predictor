@@ -95,7 +95,7 @@ def deletion_evidence(laps, drivers, control, cutoff):
  deleted = {}
  unknown_before = {}
  numbers = {d['driver_number'] for d in drivers}
- for message in sorted(control, key=lambda item: item['date']):
+ for message in sorted(control, key=lambda item: stamp(item['date'])):
   when = stamp(message['date'])
   if when > cutoff:
    continue
@@ -176,25 +176,36 @@ def pit_laps(laps, pits, cutoff):
 
 def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
  """Derived validity, not an official IsAccurate flag; unknown stays rejected."""
- mapping={d['driver_number']:d['name_acronym'] for d in drivers};deleted,unknown_before=deletion_evidence(laps,drivers,control,cutoff);flags={};blocked=[];neutral_blocks=[];last=start
- for msg in sorted(control,key=lambda x:x['date']):
+ mapping={d['driver_number']:d['name_acronym'] for d in drivers};deleted,unknown_before=deletion_evidence(laps,drivers,control,cutoff);flags={};blocked=[];neutral_blocks=[];last=start;vsc_ending=False;sc_ending=False
+ for msg in sorted(control,key=lambda x:stamp(x['date'])):
   t=stamp(msg['date'])
   if t>cutoff:continue
   if t>last and flags:
    blocked.append((last,t))
-   if 'SC' in flags.values():neutral_blocks.append((last,t))
+   if {'SC','VSC'} & set(flags.values()):neutral_blocks.append((last,t))
   last=t;flag=msg.get('flag');scope=(msg.get('scope'),msg.get('sector'))
   if flag in {'YELLOW','DOUBLE YELLOW','RED'}:flags[scope]=flag
   elif flag in {'GREEN','CLEAR'}:
-   if msg.get('scope')=='Track':flags={}
+   if msg.get('scope')=='Track':
+    if flag=='GREEN':flags={};vsc_ending=False;sc_ending=False
+    else:
+     # Track clear alone is not a red-flag restart or an SC withdrawal.
+     flags={k:v for k,v in flags.items() if v in {'RED','SC','VSC'}}
+     if vsc_ending:flags.pop(('VirtualNeutralisation',None),None);vsc_ending=False
+     if sc_ending:flags.pop(('Neutralisation',None),None);sc_ending=False
    else:flags.pop(scope,None)
-  text=msg.get('message','')
-  if 'SAFETY CAR DEPLOYED' in text:flags[('Neutralisation',None)]='SC'
-  if 'SAFETY CAR IN PIT LANE' in text:flags.pop(('Neutralisation',None),None)
+  text=msg.get('message','').upper().strip()
+  if text in {'VSC DEPLOYED','VIRTUAL SAFETY CAR DEPLOYED'}:
+   flags[('VirtualNeutralisation',None)]='VSC';vsc_ending=False
+  if text in {'VSC ENDING','VIRTUAL SAFETY CAR ENDING'}:vsc_ending=True
+  if text=='SESSION STARTED':flags={k:v for k,v in flags.items() if v!='RED'}
+  if text=='SAFETY CAR DEPLOYED':flags[('Neutralisation',None)]='SC';sc_ending=False
+  if text=='SAFETY CAR IN THIS LAP':sc_ending=True
+  if text=='SAFETY CAR IN PIT LANE':flags.pop(('Neutralisation',None),None)
 
  if flags:
   blocked.append((last,cutoff))
-  if 'SC' in flags.values():neutral_blocks.append((last,cutoff))
+  if {'SC','VSC'} & set(flags.values()):neutral_blocks.append((last,cutoff))
  pitset=pit_laps(laps,pits,cutoff)
  ordered={(r['driver_number'],r['lap_number']):r for r in laps};duplicates=Counter((r['driver_number'],r['lap_number']) for r in laps);accepted=[];audit=[]
  for r in laps:
