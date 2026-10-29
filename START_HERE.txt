@@ -139,7 +139,7 @@ model formula is fixed. More available FP2 data is a coverage change, not proof
 that a provider is inherently more accurate. Sparse Sprint tests and revised
 historical records limit conclusions. Never tune to a known winner or favourite.
 
-Current checks: 186 tests pass; four FastF1-only tests skip. Historical replays block FastF1 imports and
+Current checks: 199 tests pass; four FastF1-only tests skip. Historical replays block FastF1 imports and
 network access after genuine source responses have been cached. Source fixes
 recover seven Sprint laps in the 23-session FP1/Sprint inventory (7,563 to 7,570).
 Hungary selected reference: all 132 lap durations match exactly; 130 now pass.
@@ -311,3 +311,34 @@ Additional qualifying trials (13 Q / four SQ each; all disabled):
 Each fit uses earlier weekends. SQ ranking errors cover three complete fields.
 These alternatives do not establish a convincing overall improvement. Production
 weights, practice scoring and native model inputs are retained.
+
+TYRE VALIDATION AND LOCAL CACHE RECOVERY
+Tyre ages must be finite nonnegative whole lap counts. Boolean/fractional ages,
+invalid stint numbers, reversed/malformed bounds and overlapping stints cannot
+validate pace. Such evidence stays unverified rather than being guessed. A broken
+record for one driver does not discard other drivers' usable laps. Unrelated
+future incomplete stints do not erase an otherwise valid current match.
+lap_quality.csv now includes tyre_evidence_issue alongside the age/freshness
+assumptions. This does not reconstruct FastF1's explicit new/used tyre field.
+
+Missing, unreadable or wrong-session active OpenF1 responses can be restored
+from local snapshots. Recovery verifies the saved SHA-256, exact query URL,
+session identity and response structure before writing the active copy. A small
+index makes recovery faster; older snapshots without that index can be scanned.
+Recovery retains the original fetched time: online freshness/--refresh rules
+still apply. Failed online downloads do not automatically switch to stale data.
+Use --offline when intentionally working from saved responses during an outage.
+Recovery is reported in the terminal and source_manifest.json/cache_recoveries.
+
+Back up the entire ~/F1Data/cache/openf1 folder, including http, snapshots and
+index, outside Git. Existing caches work unchanged; no redownload is required.
+A snapshot cannot reconstruct a session that was never downloaded, and no new
+independent practice-data provider is enabled by this update.
+
+Verification: 203 discovered external tests, 199 passed and four FastF1-only
+skips. All 48 cached practice/Sprint inventories retain identical accepted laps
+and reasons. An isolated Austin FP3 recovery test removed/corrupted three active
+response files; the offline prediction, simulations and backtests matched the
+previous healthy-cache run exactly. Scoring weights and section exclusions stay
+unchanged. These checks establish recovery and unchanged evidence on this data;
+they do not establish universal tyre-field parity or a new prediction advantage.

@@ -21,14 +21,51 @@ def stamp(value):
  return t.tz_convert('UTC')
 
 class Client:
- def __init__(self,root,offline=False,refresh=False):self.root=Path(root)/'openf1';self.offline=offline;self.refresh=refresh;self.session_ends={};self.provenance={}
+ def __init__(self,root,offline=False,refresh=False):self.root=Path(root)/'openf1';self.offline=offline;self.refresh=refresh;self.session_ends={};self.provenance={};self.cache_events=[]
+ def validate_record(self,record,url,params):
+  if not isinstance(record,dict) or record.get('url')!=url:raise ValueError('OpenF1 cache identity mismatch')
+  fetched=record.get('fetched_unix');data=record.get('data')
+  if isinstance(fetched,bool) or not isinstance(fetched,(int,float)) or not np.isfinite(fetched) or fetched<0:raise ValueError('Invalid OpenF1 cache timestamp')
+  if not isinstance(data,list) or not all(isinstance(row,dict) for row in data):raise ValueError('Invalid OpenF1 cached response')
+  if 'session_key' in params and any(row.get('session_key')!=params['session_key'] for row in data):raise ValueError('OpenF1 session identity mismatch')
+  json.dumps(record,allow_nan=False)
+  return record
+ def recover(self,url,params):
+  """Recover only hash-verified observations for this exact query."""
+  index=self.root/'index'/(hashlib.sha256(url.encode()).hexdigest()+'.json')
+  try:
+   digest=json.loads(index.read_text())['sha256']
+   candidates=[self.root/'snapshots'/(digest+'.json')] if isinstance(digest,str) and re.fullmatch('[a-f0-9]{64}',digest) else []
+  except (OSError,ValueError,KeyError,TypeError):candidates=[]
+  # Older installations have snapshots without an index. Scan only when
+  # recovering, not during ordinary successful cache reads/downloads.
+  def read(path):
+   raw=path.read_bytes()
+   if hashlib.sha256(raw).hexdigest()!=path.stem:raise ValueError('Snapshot hash mismatch')
+   return self.validate_record(json.loads(raw),url,params)
+  for path in candidates:
+   try:return read(path)
+   except (OSError,ValueError,KeyError,TypeError):pass
+  found=[]
+  for path in (self.root/'snapshots').glob('*.json'):
+   try:found.append(read(path))
+   except (OSError,ValueError,KeyError,TypeError):continue
+  return max(found,key=lambda record:record['fetched_unix']) if found else None
  def remember(self,record,used=True):
   """Keep immutable observed responses, not a claim of historical availability."""
   encoded=json.dumps(record,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
   digest=hashlib.sha256(encoded).hexdigest()
   relative=Path('snapshots')/(digest+'.json')
   snapshot=self.root/relative
-  if not snapshot.exists():save(snapshot,record)
+  if not snapshot.exists() or hashlib.sha256(snapshot.read_bytes()).hexdigest()!=digest:save(snapshot,record)
+  index=self.root/'index'/(hashlib.sha256(record['url'].encode()).hexdigest()+'.json')
+  try:previous=json.loads(index.read_text())
+  except (OSError,ValueError):previous={}
+  previous_time=previous.get('fetched_unix') if isinstance(previous,dict) else None
+  try:valid_index=isinstance(previous_time,(int,float)) and not isinstance(previous_time,bool) and np.isfinite(previous_time) and isinstance(previous.get('sha256'),str) and re.fullmatch('[a-f0-9]{64}',previous['sha256'])
+  except (TypeError,ValueError,OverflowError):valid_index=False
+  if not valid_index or previous_time<=record['fetched_unix']:
+   save(index,dict(sha256=digest,fetched_unix=record['fetched_unix']))
   if used:
    self.provenance[record['url']]=dict(url=record['url'],fetched_unix=record['fetched_unix'],
        records=len(record['data']),sha256=digest,snapshot=str(relative))
@@ -39,13 +76,17 @@ class Client:
   global _LAST_REQUEST
   url=requests.Request('GET','https://api.openf1.org/v1/'+endpoint,params=sorted(params.items())).prepare().url
   path=self.root/'http'/(hashlib.sha256(url.encode()).hexdigest()+'.json')
-  if path.exists() and self.refresh and not self.offline:
-   previous=json.loads(path.read_text())
-   if previous['url']!=url:raise ValueError('OpenF1 cache identity mismatch')
-   self.remember(previous,used=False)
-  if path.exists() and (self.offline or not self.refresh):
-   cached=json.loads(path.read_text())
-   if cached['url']!=url:raise ValueError('OpenF1 cache identity mismatch')
+  cached=None
+  try:
+   if path.exists():cached=self.validate_record(json.loads(path.read_text()),url,params)
+  except (OSError,ValueError,KeyError,TypeError):pass
+  if cached is None and (self.offline or path.exists() or (self.root/'index'/(path.name)).exists()):
+   cached=self.recover(url,params)
+   if cached is not None:
+    save(path,cached);self.cache_events.append(dict(endpoint=endpoint,params=params,recovered=True,fetched_unix=cached['fetched_unix']))
+    print(f'  OpenF1 restored verified local snapshot: {endpoint} {params}',flush=True)
+  if cached is not None and self.refresh and not self.offline:self.remember(cached,used=False)
+  if cached is not None and (self.offline or not self.refresh):
    # Nonempty is not proof of completeness. Recent sessions must refresh
    # while timing/tyre corrections arrive; older data is also not immortal.
    end=self.session_ends.get(params.get('session_key'))
@@ -174,6 +215,32 @@ def pit_laps(laps, pits, cutoff):
  return excluded
 
 
+def whole_laps(value,minimum=0):
+ """A source lap count is a whole number, never a boolean or fraction."""
+ if isinstance(value,(bool,np.bool_)) or not isinstance(value,(int,float,np.integer,np.floating)):return False
+ try:return bool(np.isfinite(value) and value>=minimum and value==int(value))
+ except (TypeError,ValueError,OverflowError):return False
+
+def stint_evidence(stints,number,lap):
+ matches=[]
+ for stint in stints:
+  if stint.get('driver_number')!=number:continue
+  first=stint.get('lap_start');last=stint.get('lap_end')
+  if whole_laps(first,1) and whole_laps(last,1) and last<first:return {},'invalid stint','reversed stint bounds'
+  if not whole_laps(first,1) or not whole_laps(last,1):
+   # A malformed interval cannot validate an overlapping lap. Known bounds
+   # can still establish that a broken record is unrelated to this lap.
+   if whole_laps(last,1) and last<lap or whole_laps(first,1) and first>lap:continue
+   return {},'invalid stint','missing, reversed or noninteger stint bounds'
+  if first<=lap<=last:matches.append(stint)
+ if not matches:return {},'missing stint','no reported stint covers this lap'
+ if len(matches)>1:return {},'ambiguous stint','overlapping reported stints'
+ stint=matches[0]
+ if not whole_laps(stint.get('stint_number'),1):return stint,'invalid stint','invalid stint number'
+ if not whole_laps(stint.get('tyre_age_at_start')):return stint,'unknown tyre','tyre age is not a nonnegative whole lap count'
+ if stint.get('compound') not in {'SOFT','MEDIUM','HARD','INTERMEDIATE','WET'}:return stint,'unknown tyre','unknown compound'
+ return stint,None,None
+
 def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
  """Derived validity, not an official IsAccurate flag; unknown stays rejected."""
  mapping={d['driver_number']:d['name_acronym'] for d in drivers};deleted,unknown_before=deletion_evidence(laps,drivers,control,cutoff);flags={};blocked=[];neutral_blocks=[];last=start;vsc_ending=False;sc_ending=False
@@ -231,25 +298,20 @@ def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
       p=stamp(prev['date_start']);pend=p+pd.Timedelta(seconds=prev['lap_duration'])
       if abs((t-pend).total_seconds())>.0030001:reason='consecutive lap timing mismatch'
       elif any(p<b and pend>x for x,b in neutral_blocks):reason='previous lap affected by neutralisation'
-  matches=[s for s in stints if s['driver_number']==num and s.get('lap_start') is not None and s.get('lap_end') is not None and s['lap_start']<=n<=s['lap_end']]
-  if reason is None:
-   if not matches:reason='missing stint'
-   elif len(matches)>1:reason='ambiguous stint'
-   else:
-    s=matches[0];age=s.get('tyre_age_at_start')
-    if not isinstance(age,(int,float)) or not np.isfinite(age) or age<0 or s.get('compound') not in {'SOFT','MEDIUM','HARD','INTERMEDIATE','WET'}:reason='unknown tyre'
-  state='valid_for_pace' if reason is None else 'unverified' if reason in {'missing timing','missing sector timing','unknown tyre','missing stint','ambiguous stint','unresolved earlier deletion','consecutive lap timing mismatch'} else 'excluded_from_pace'
-  tyre=matches[0] if len(matches)==1 else {}
+  tyre,tyre_reason,tyre_issue=stint_evidence(stints,num,n)
+  if reason is None:reason=tyre_reason
+  state='valid_for_pace' if reason is None else 'unverified' if reason in {'missing timing','missing sector timing','unknown tyre','missing stint','ambiguous stint','invalid stint','unresolved earlier deletion','consecutive lap timing mismatch'} else 'excluded_from_pace'
   initial_age=tyre.get('tyre_age_at_start')
-  age_known=isinstance(initial_age,(int,float)) and np.isfinite(initial_age) and initial_age>=0
+  age_known=whole_laps(initial_age) and whole_laps(tyre.get('lap_start'),1)
   audit.append(dict(driver=mapping.get(num,str(num)),lap_number=n,accepted=reason is None,quality_state=state,reason=reason or 'passed derived checks',
       compound=tyre.get('compound'),stint=tyre.get('stint_number'),
       tyre_age_at_start=initial_age if age_known else None,
       derived_tyre_life=initial_age+n-tyre['lap_start']+1 if age_known else None,
       freshness_basis='age-at-start proxy; explicit new/used flag unavailable' if age_known else 'unknown',
+      tyre_evidence_issue=tyre_issue,
       scheduled_elapsed_seconds=(t-start).total_seconds() if t is not None else None))
   if reason is None:
-   accepted.append(dict(Driver=mapping[num],Compound=s['compound'],TyreLife=age+n-s['lap_start']+1,FreshTyre=age==0,LapNumber=n,Stint=s['stint_number'],LapStartTime=t-start,lap_seconds=duration))
+   accepted.append(dict(Driver=mapping[num],Compound=tyre['compound'],TyreLife=initial_age+n-tyre['lap_start']+1,FreshTyre=initial_age==0,LapNumber=n,Stint=tyre['stint_number'],LapStartTime=t-start,lap_seconds=duration))
  return pd.DataFrame(accepted,columns=['Driver','Compound','TyreLife','FreshTyre','LapNumber','Stint','LapStartTime','lap_seconds']),audit
 
 class Store:
