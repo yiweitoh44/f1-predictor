@@ -1033,7 +1033,7 @@ def run(args):
     quality_rows = [dict(session=code, policy=data.get('quality_policy'), **row)
                     for code, data in current.items() for row in data.get('lap_quality_audit', [])]
     pd.DataFrame(quality_rows, columns=['session','policy','driver','lap_number','accepted','quality_state','reason',
-        'compound','stint','tyre_age_at_start','derived_tyre_life','freshness_basis','scheduled_elapsed_seconds']).to_csv(
+        'compound','stint','tyre_age_at_start','derived_tyre_life','freshness_basis','tyre_evidence_issue','scheduled_elapsed_seconds']).to_csv(
         folder / 'lap_quality.csv', index=False)
     output.to_csv(folder / "predictions.csv", index=False)
     simulation_details.to_csv(folder / 'simulation_details.csv', index=False)
@@ -1161,6 +1161,7 @@ def run(args):
                 "historical_data": "current published revisions, not archived as-of snapshots"}
     source_manifest = dict(provider='OpenF1',
         archive_root=str(store.client.root),
+        cache_recoveries=schedule_client.cache_events + store.client.cache_events,
         interpretation='Observed download snapshots; fetched_unix is not the original publication time.',
         responses=list(store.client.provenance.values()))
     openf1_data.save(folder / 'source_manifest.json', source_manifest)

@@ -50,3 +50,9 @@ prediction files. The manifest identifies the downloaded responses used, and
 local snapshots preserve them when the cache refreshes. These are observations
 from download time, not proof of what was available at an earlier race cutoff.
 See START_HERE.txt for the data limitations and qualifying experiments.
+
+The data-resilience update validates whole-lap tyre ages and stint identifiers,
+keeps malformed tyre evidence out of pace scoring, and reports the reason in the
+lap audit. A missing or damaged active OpenF1 cache file can be restored from a
+verified local snapshot. Keep the complete `cache/openf1` folder for offline use;
+this recovers saved data and does not supply sessions that were never downloaded.
