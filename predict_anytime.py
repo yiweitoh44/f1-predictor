@@ -3,12 +3,14 @@ Run: python predict_anytime.py --race Singapore --session race
 Requires the existing requirements.txt. No OpenAI API or LLM is used.
 Uses a new training pipeline; it does not reproduce the original GitHub model.
 
-SETUP: Keep session_influence.py, circuit_sections.py, grid_sources.py, openf1_data.py, tracks.csv and
+SETUP: Keep session_influence.py, circuit_sections.py, grid_sources.py, openf1_data.py,
+forecast_validation.py, tracks.csv and
 requirements.txt beside this file. See START_HERE.txt for setup and scoring.
 Select --session race, qualifying, sprint or sprint-qualifying. Rerun the same
 command after another session's data becomes available. This predicts an
-unstarted session, not an in-progress race. At least four usable earlier
-weekends in the selected season are required. Missing sessions are reported
+unstarted session, not an in-progress race. The first four weekends can use
+an explicitly labelled evidence-only fallback; the trained model needs four
+usable earlier weekends. Missing sessions are reported
 and omitted; missing driver values are not filled with invented positions.
 
 TRAINING: Qualifying and Sprint Qualifying share one family; Race and Sprint
@@ -71,6 +73,7 @@ import pandas as pd
 import session_influence as influence
 import grid_sources
 import openf1_data
+import forecast_validation
 from circuit_sections import (GROUP_COLUMNS, GROUP_WEIGHTS, circuit_group_match,
                               historical_section_features)
 
@@ -83,6 +86,7 @@ BACKTEST_WEEKENDS = 8
 UNCERTAINTY_WEEKENDS = 4
 CLOSE_CALL_MIN_PCT = 45.0
 CLOSE_CALL_MAX_PCT = 55.0
+EARLY_SEASON_SIGMA = 0.20  # Explicit uncalibrated assumption, not measured error.
 SESSION_NAMES = {"Practice 1": "FP1", "Practice 2": "FP2", "Practice 3": "FP3",
                  "Sprint Qualifying": "SQ", "Sprint Shootout": "SQ",
                  "Sprint": "S", "Qualifying": "Q", "Race": "R"}
@@ -743,6 +747,28 @@ def train_and_check(frame, target_code, comparison_rows=None):
     return fit(frame, columns), columns, sigma, details
 
 
+def early_season_model(inputs):
+    """Use existing evidence only; never fit or invent earlier-season labels."""
+    scores = inputs['influence_anchor'].to_numpy(dtype=float)
+    if len(scores) < 3 or not np.isfinite(scores).all() or np.ptp(scores) < 1e-9:
+        raise ValueError('Not enough distinguishing evidence for an early-season forecast. '
+                         'Wait for practice/qualifying or provide a verified roster if needed.')
+
+    class EvidenceModel:
+        def predict(self, data):
+            return data['influence_anchor'].to_numpy(dtype=float)
+
+        def save_model(self, path):
+            Path(path).write_text(json.dumps(dict(model_type='early_season_evidence',
+                trained=False, uncertainty_sigma=EARLY_SEASON_SIGMA,
+                uncertainty_basis='uncalibrated fixed assumption; no measured backtest error')),
+                encoding='utf-8')
+
+    print('Early-season fallback: existing evidence score; no trained ML adjustment.')
+    print('Backtests unavailable for this fallback; simulation spread uses an uncalibrated assumption.')
+    return EvidenceModel(), ['influence_anchor'], EARLY_SEASON_SIGMA, []
+
+
 def simulate(scores, sigma, count, return_positions=False):
     rng = np.random.default_rng(42)
     ranks = np.argsort(scores[None, :] + rng.normal(0, sigma, (count, len(scores))), axis=1)
@@ -824,6 +850,15 @@ def prediction_roster(current, allowed, usable_events, all_data):
                   for code, _ in session_schedule(event)
                   if code in competitive and code in all_data[int(event["RoundNumber"])]]
     if not candidates:
+        expected = max((len(data['drivers']) for c, data in current.items()
+                        if c.startswith('FP')), default=0)
+        later = [c for c in allowed if c in current and c in {'FP2', 'FP3'}
+                 and len(current[c]['drivers']) >= expected >= 3]
+        if later:
+            code = later[-1]
+            return current[code]['drivers'], ('current ' + code
+                + '; no earlier competitive roster; assumes full practice lineup is entered; '
+                'use --roster for confirmed entries')
         raise ValueError("No competitive driver roster available. Supply --roster.")
     event, code = candidates[-1]
     drivers = all_data[int(event["RoundNumber"])][code]["drivers"]
@@ -931,12 +966,16 @@ def run(args):
         if available:
             all_data[rnd] = available
             usable_events.append(past)
-    if not usable_events:
+    if not usable_events and int(event['RoundNumber']) > 4:
         raise ValueError("No earlier season data could be loaded.")
     family = RACE_TYPES if target in RACE_TYPES else {"Q", "SQ"}
     frame, history = training_rows(usable_events, all_data, family, set(current), tracks)
-    if frame.empty:
+    if frame.empty and int(event['RoundNumber']) > 4:
         raise ValueError("No valid historical labels available for this prediction type.")
+    if frame.empty:
+        frame = pd.DataFrame(columns=['event_round', 'target_session', 'label', 'driver']
+                             + influence.RACE_MODEL_COLUMNS)
+    early = int(event['RoundNumber']) <= 4 and frame.event_round.nunique() < 4
     # FP1 reserve drivers must not automatically replace competitive entrants.
     if args.roster:
         roster = pd.read_csv(args.roster, encoding="utf-8-sig")
@@ -1002,7 +1041,7 @@ def run(args):
     # Legacy cached section evidence is intentionally ignored in normal runs.
     section_profile, section_evidence = [], []
     print(
-        f"Training on {len(frame)} driver-session examples "
+        f"{'Available history:' if early else 'Training on'} {len(frame)} driver-session examples "
         f"from {frame.event_round.nunique()} earlier weekends."
     )
     coverage = {
@@ -1014,7 +1053,7 @@ def run(args):
     coverage["incomplete"] = (len(coverage["training_rounds"]) < len(requested_rounds)
                               or bool(coverage["classification_only_current_sessions"]))
     timing_sessions = ", ".join(coverage["current_sessions_with_lap_timing"]) or "none"
-    print(f"Training coverage: {len(coverage['training_rounds'])}/{len(requested_rounds)} earlier weekends; "
+    print(f"{'History' if early else 'Training'} coverage: {len(coverage['training_rounds'])}/{len(requested_rounds)} earlier weekends; "
           f"current sessions with lap timing: {timing_sessions}.")
     if coverage["incomplete"]:
         print("Incomplete data coverage: inspect run_info.json alongside these experimental rankings.")
@@ -1024,7 +1063,10 @@ def run(args):
     inputs = inputs.assign(**pd.DataFrame([
         influence.add_influence(row, target) for row in inputs.to_dict('records')]))
     comparisons = []
-    model, columns, sigma, tests = train_and_check(frame, target, comparison_rows=comparisons)
+    if early:
+        model, columns, sigma, tests = early_season_model(inputs)
+    else:
+        model, columns, sigma, tests = train_and_check(frame, target, comparison_rows=comparisons)
     scores = model.predict(inputs[columns])
     win, top3, average, positions = simulate(scores, sigma, args.simulations, return_positions=True)
     output, simulation_details = prediction_tables(drivers, scores, win, top3, average, positions, target)
@@ -1052,8 +1094,8 @@ def run(args):
                       source=grid_record['source'] if grid_record else
                           ('qualifying fallback' if target in RACE_TYPES else 'not applicable'))
                   for i,d in enumerate(names)]).to_csv(folder/'starting_grid.csv',index=False)
-    pd.DataFrame(tests).to_csv(folder / "backtest.csv", index=False)
-    pd.DataFrame(comparisons).to_csv(folder / 'backtest_comparisons.csv', index=False)
+    pd.DataFrame(tests, columns=['round','session','pick','actual','correct','mean_rank_error','top3_hits']).to_csv(folder / "backtest.csv", index=False)
+    pd.DataFrame(comparisons, columns=['round','session','method','eligible','reason','drivers','pick','actual','correct','mean_rank_error','top3_hits']).to_csv(folder / 'backtest_comparisons.csv', index=False)
     model.save_model(folder / "model.json")
     (folder / "influence_policy.json").write_text(json.dumps(influence.policy(), indent=2), encoding="utf-8")
     inputs[[c for c in inputs if c.startswith('influence_')]].assign(driver=names).to_csv(
@@ -1119,6 +1161,13 @@ def run(args):
     pd.DataFrame(rejection_rows, columns=["year", "round", "location", "session", "driver", "lap", "reason"]).to_csv(
         folder / "section_rejections.csv", index=False)
     metadata = {"target": args.session, "event": event["EventName"], "as_of": now.isoformat(),
+                "year": args.year, "round": int(event['RoundNumber']),
+                "target_start_utc": target_start.isoformat(),
+                "target_end_utc": (event.get(target + '_openf1') or {}).get('date_end'),
+                "forecast_method": 'early_season_evidence' if early else 'native_xgboost',
+                "training_examples_used": 0 if early else len(frame),
+                "backtest_count": len(tests),
+                "uncertainty_basis": 'uncalibrated fixed assumption' if early else 'earlier chronological residuals; uncalibrated',
                 "used_sessions": list(current), "roster_source": roster_source,
                 "prediction_drivers": names, "practice_only_drivers": practice_only,
                 "weather": "diagnostic observations/scenarios only; not an active model input; no forecast API",
@@ -1129,6 +1178,7 @@ def run(args):
                 "backtest_maximum_weekends": BACKTEST_WEEKENDS,
                 "validation_comparison": {
                     "common_rounds": comparison_summary(comparisons, target)[0],
+                    "scope": "native-model chronological checks; early evidence forecasts are scored separately",
                     "model_order": "score order (expected mean-position order under shared simulation noise)",
                     "grid_basis": "historical OpenF1 grid when qualifying is available; current published revisions; no qualifying fallback for a missing benchmark grid",
                     "missing_baseline": "exclude the weekend from every method in the comparison table; retain full model backtest report",
@@ -1142,7 +1192,7 @@ def run(args):
                 "model_features": columns,
                 "section_pace_model_inputs": False,
                 "session_influence": influence.policy(),
-                "prediction_formula": "(1-learned_share)*influence_anchor + learned_share*clip(native_model_prediction,0,1)",
+                "prediction_formula": 'influence_anchor (no ML fit)' if early else "(1-learned_share)*influence_anchor + learned_share*clip(native_model_prediction,0,1)",
                 "circuit_category_weights": GROUP_WEIGHTS,
                 "circuit_category_method": "weighted tag overlap; one result average per weekend; minimum two matching weekends; recency 0.85 per round",
                 "circuit_history_window_rounds": influence.HISTORY_WEEKENDS,
@@ -1172,6 +1222,8 @@ def run(args):
         print('Close calls: the named row driver beats the driver above in 45–55% of simulations.')
     print_prediction_table(output)
     print(f"Saved: {folder}")
+    frozen = forecast_validation.freeze(folder, ROOT)
+    print(f'Forecast copy saved: {frozen}')
 
 
 def main():
@@ -1180,6 +1232,8 @@ def main():
     parser.add_argument("--race")
     parser.add_argument("--session", choices=MODES, default="race")
     parser.add_argument("--list-races", action="store_true")
+    parser.add_argument('--score-forecast', type=Path, help='Score a saved forecast copy; requires --actual-results CSV')
+    parser.add_argument('--actual-results', type=Path, help='CSV: year,round,session,driver,position')
     parser.add_argument("--tracks", type=Path, default=ROOT / "tracks.csv")
     parser.add_argument("--roster", type=Path, help="Optional verified driver,team,name CSV")
     parser.add_argument("--grid", type=Path, help="Optional full driver,grid CSV after qualifying, for grid penalties")
@@ -1194,6 +1248,28 @@ def main():
     parser.add_argument("--air-temp", type=float, help="Record temperature scenario in Celsius; diagnostic only, no score effect")
     parser.add_argument("--wet", type=int, choices=[0, 1], help="Record dry/wet scenario; diagnostic only, no score effect")
     args = parser.parse_args()
+    if args.score_forecast or args.actual_results:
+        if not (args.score_forecast and args.actual_results):
+            parser.error('--score-forecast and --actual-results must be used together.')
+        try:
+            result, path = forecast_validation.score(args.score_forecast, args.actual_results)
+        except (ValueError, OSError, KeyError) as exc:
+            raise SystemExit(f'Scoring stopped: {exc}') from exc
+        print(f"{result['event']} / {result['session']}: {result['timing']}")
+        outcome = 'correct' if result['correct'] else 'missed'
+        print(f"First pick: {result['pick']}; actual: {result['actual']} ({outcome}).")
+        if result['top3_eligible']:
+            print(f"Top-three drivers found: {result['top3_hits']}/3.")
+        else:
+            print('Top-three comparison unavailable: published top-three positions are incomplete.')
+        if result['ranking_eligible']:
+            print(f"Average places out: {result['mean_rank_error']:.2f}.")
+        else:
+            print('Full ranking not compared: driver fields or published positions are incomplete.')
+            print('Missing forecast drivers: ' + (', '.join(result['missing_forecast_drivers']) or 'none'))
+            print('Missing actual-result drivers: ' + (', '.join(result['missing_actual_drivers']) or 'none'))
+        print(f'Validation saved: {path}')
+        return
     if args.offline and args.refresh:
         parser.error("--offline cannot be combined with --refresh.")
     if not args.list_races and not args.race:

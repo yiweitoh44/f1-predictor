@@ -2,7 +2,7 @@ F1 PREDICTOR — OPENF1 DATA VERSION
 
 SETUP
 Keep predict_anytime.py, openf1_data.py, session_influence.py, grid_sources.py,
-circuit_sections.py, tracks.csv and requirements.txt together. Run only
+circuit_sections.py, forecast_validation.py, tracks.csv and requirements.txt together. Run only
 predict_anytime.py; the others are imported helpers.
 
   python -m pip install -r requirements.txt
@@ -26,8 +26,9 @@ After the scheduled target start, enter y to replay using the pre-start cutoff.
 An explicit --as-of timestamp must precede the target and cannot be in the future.
 The target's results and later sessions are never prediction inputs.
 Before current practice exists the model uses earlier form. Rerun after practice
-and qualifying to use newly available inputs. At least four earlier usable
-weekends are required. Missing inputs are reported, not invented.
+and qualifying to use newly available inputs. The first four weekends can use
+a labelled evidence-only fallback; the trained model requires four earlier
+usable weekends. Missing inputs are reported, not invented.
 
 SOURCES AND CACHE
 OpenF1 supplies meeting/session schedules, drivers, classifications, grids,
@@ -139,7 +140,7 @@ model formula is fixed. More available FP2 data is a coverage change, not proof
 that a provider is inherently more accurate. Sparse Sprint tests and revised
 historical records limit conclusions. Never tune to a known winner or favourite.
 
-Current checks: 199 tests pass; four FastF1-only tests skip. Historical replays block FastF1 imports and
+Current checks: 214 tests pass; four FastF1-only tests skip. Historical replays block FastF1 imports and
 network access after genuine source responses have been cached. Source fixes
 recover seven Sprint laps in the 23-session FP1/Sprint inventory (7,563 to 7,570).
 Hungary selected reference: all 132 lap durations match exactly; 130 now pass.
@@ -342,3 +343,81 @@ response files; the offline prediction, simulations and backtests matched the
 previous healthy-cache run exactly. Scoring weights and section exclusions stay
 unchanged. These checks establish recovery and unchanged evidence on this data;
 they do not establish universal tyre-field parity or a new prediction advantage.
+
+EARLY-SEASON FORECASTS
+For rounds 1–4, when four earlier usable weekends do not exist, the predictor
+uses the existing explicit evidence score without fitting an ML adjustment.
+It uses available current-season form, practice and Q/grid information; it does
+not load a prior season or the target result. No new source weights are tuned.
+Missing history has the existing neutral value, not an invented prior result.
+
+Fallback output is explicitly labelled. model.json contains its evidence policy,
+not an XGBoost booster; run_info.json records forecast_method, zero trained
+examples and zero backtests. Sigma 0.20 is a fixed uncalibrated simulation-spread
+assumption in normalized score units, not measured error or a real probability.
+The eight-test native-model checks remain unchanged; fallback forecasts are
+scored separately. After the warm-up, the established native model is retained.
+Missing later-season history does not silently activate early-season mode.
+
+Before any competitive roster exists, a full FP2/FP3 lineup can be assumed;
+FP1 alone cannot silently promote reserve drivers. Use --roster to confirm the
+entrants when needed. With no usable distinguishing evidence, the run stops
+rather than presenting a random ranking. Before the first practice of the year,
+a roster alone therefore cannot create a meaningful forecast.
+
+SAVING AND CHECKING A FORECAST
+Each normal run still writes latest. It also saves a separate forecast copy:
+  ~/F1Data/outputs/<year>_<round>_<session>/forecasts/<timestamp>_<id>
+The printed path identifies the copy. It preserves predictions, model, effective
+inputs/policy, starting grid, backtests, run metadata and source manifest, with
+file hashes, code/default-input hashes and runtime versions. Copies consume disk
+space but omit the large training table and raw cache. Repeated runs do not
+replace these copies. Keep them outside Git with your existing raw-data archive.
+
+After the session, prepare an actual-results CSV with these columns:
+  year,round,session,driver,position
+Use original published positions and driver codes; do not renumber a subset.
+Session accepts Q, SQ, S, R or the normal command's session name. Include only
+one event/session and at least three identified drivers. Then run:
+  python predict_anytime.py --score-forecast "<printed forecast-copy path>" --actual-results "results.csv"
+No --race argument or download is required for this scoring operation.
+
+Scoring verifies the saved files and event/session identity, and waits until the
+recorded scheduled end. The input cutoff cannot be after forecast creation or
+the target start. A copy created after the target start remains labelled
+historical replay even if --as-of was before the target. A copy created before
+the saved scheduled start is labelled pre-session; that timestamp is not a
+claim that the model choice was never informed by earlier experiments.
+
+The score compares the actual published pole/winner and top-three identities.
+Missing P1 is rejected, not promoted from P2. If top-three positions are missing,
+that comparison is omitted. Full ranking error needs matching driver fields and
+complete position orders; exclusions are explicit, with no silent intersection
+or renumbering. Results go into a separate evaluations directory with forecast,
+actual-data and scorer hashes; saved forecasts are left unchanged.
+
+This provides the tooling for future validation; no future job is scheduled and
+future weekends still need to happen. Actual outcomes are supplied only to the
+separate scoring command and never enter the forecast through that command.
+
+EARLY-SEASON CHECKS (HISTORICAL REPLAYS, NOT UNSEEN TESTS)
+Twelve forecasts now run across the first four cached 2026 weekends:
+  GP Race: 4/4 winner picks, 3.750 places out over four complete fields.
+  GP Q: 1/4 poles, 2.000 places out over three complete fields.
+  Sprint: 1/2 winner picks; full-field ranking not eligible with these results.
+  SQ: 1/2 poles; full-field ranking not eligible with these results.
+These are new fallback cases, separate from the established later-event results.
+Qualifying order alone also picks all four early GP winners; this is not evidence
+of perfect ML or a statistically established advantage. Pole/winner counts use
+actual identities even when full-field rank comparisons are unavailable.
+All 34 later forecast tables, simulation details and eight-test backtest CSVs
+match the previous model exactly. Existing Q/SQ scoring is not retuned.
+
+218 external tests discovered: 214 pass, four FastF1-only skips. Tests include
+fallback refusal with no distinguishing evidence, roster assumptions, saved-copy
+integrity, wrong-event data, incomplete fields, missing winners, historical replay
+labelling, scheduled-end guards and preventing future-cutoff claims.
+
+When reporting success rates, use a consistent forecast stage and count each
+event/session once. Repeated runs and parameter trials are not independent events.
+Evaluation records retain the input cutoff and used sessions for that comparison.

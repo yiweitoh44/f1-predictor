@@ -56,3 +56,15 @@ keeps malformed tyre evidence out of pace scoring, and reports the reason in the
 lap audit. A missing or damaged active OpenF1 cache file can be restored from a
 verified local snapshot. Keep the complete `cache/openf1` folder for offline use;
 this recovers saved data and does not supply sessions that were never downloaded.
+
+
+## Early season and saved forecasts
+
+Rounds 1–4 can use a labelled evidence-only fallback when training history is
+insufficient. It uses available current-season evidence and refuses an arbitrary
+ranking when no evidence distinguishes drivers. Later model scoring is retained.
+
+Each run also saves a forecast copy outside `latest`, with inputs, source/code
+hashes and runtime versions. After the session, score it against a published-results
+CSV using `python predict_anytime.py --score-forecast "<saved folder>" --actual-results "results.csv"`.
+See START_HERE.txt for CSV columns, coverage checks and validation limits.
