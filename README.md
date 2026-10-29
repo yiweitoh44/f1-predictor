@@ -1,11 +1,11 @@
 # f1-predictor
-An experimental F1 predictor using Python, FastF1 and XGBoost for qualifying, sprint and race predictions. Adapted from existing work and being developed further.
+An experimental F1 predictor using Python, OpenF1 and XGBoost for qualifying, sprint and race predictions. Adapted from existing work and being developed further.
 
 # F1 Predictor
 
 A personal project to learn about machine learning through Formula 1 predictions.
 
-The current version uses Python, FastF1 and XGBoost to estimate qualifying, sprint qualifying, sprint and race outcomes using available session data and recent performance.
+The current version uses Python, OpenF1 and XGBoost to estimate qualifying, sprint qualifying, sprint and race outcomes using available session data and recent performance.
 
 ## Credits
 
@@ -18,55 +18,35 @@ Those projects credit [Mariana Antaya’s prediction work](https://github.com/ma
 
 I used these scripts as the starting point for a reusable predictor and have been adapting the code with assistance from ChatGPT. This repository will track further changes, testing and results.
 
-## Planned improvements
+## Current version
 
-- Better balance between current-weekend evidence and recent form
-- Tyre-aware practice and sprint pace comparisons
-- Circuit similarity and weather inputs
-- More historical testing and clearer prediction outputs
+The predictor now uses OpenF1 for schedules, drivers, historical classifications,
+practice/Sprint lap evidence and weather. FastF1 is no longer a dependency and no
+F1TV account is required. Published-grid source preference and the model's scoring
+policy are retained. Completed-session data is cached outside Git.
 
-These improvements are planned and are not all implemented yet.
+Run `python -m pip install -r requirements.txt`, then
+`python predict_anytime.py --year 2026 --race Austin --session qualifying`.
+The first download can take several minutes; later runs reuse the cache.
 
-## Status
+See [START_HERE.txt](START_HERE.txt) for all commands, source cutoffs, derived lap
+quality, output columns, validation limits and remaining work. Simulation shares
+are not calibrated real-world probabilities. Section telemetry stays disabled.
 
-This is an experimental learning project. Its simulation percentages are not validated real-world probabilities, and prediction accuracy is still being evaluated.
+Lap audits distinguish missing evidence from excluded laps. Pit entry/exit
+mapping and cache renewal are checked explicitly. FP1 reserve drivers no longer
+automatically replace the assumed competitive entrants; confirmed substitutions
+can be supplied with `--roster`. Historical comparisons use matching roster rules
+and actual winner identities. See START_HERE for results and remaining limits.
 
-See [START_HERE.txt](START_HERE.txt) for setup, commands, cache handling,
-session weights, grid sources, validation results and remaining limits. Manual circuit
-categories and tyre-aware pace comparisons are implemented; section telemetry
-remains disabled.
+## v3 development and the v2 checkpoint
 
-New timing downloads require FastF1 3.9+ and F1TV Access or higher after F1's
-October 2026 authentication change. Install requirements, then run
-`python -m fastf1 auth f1tv --authenticate` locally before predicting.
+The [v2 release](https://github.com/yiweitoh44/f1-predictor/releases/tag/v2)
+preserves the FastF1-based predictor. This branch develops the OpenF1 version;
+it does not read FastF1 caches or require an F1TV account.
 
-Published grids are now selected from dated FIA documents, with F1/OpenF1 and
-qualifying-order fallbacks. Pit-lane starts are identified separately.
-Race/Sprint scoring keeps qualifying performance separate from the starting
-position and splits their existing evidence budget equally. This reduced average
-ranking error in the 13-race comparison; recovery after penalties remains limited.
-
-Prediction tables now show an explicit position ordered by mean simulated rank.
-Race/Sprint tables show mean position and close matchups on the lower driver's
-row, for example: "Hamilton beats Antonelli in 49.8% of simulations".
-Q/SQ tables show predicted position and pole share. These shares are uncalibrated.
-
-The existing backtest section also compares the model with starting-grid and
-qualifying order on matching eligible weekends; Q/SQ use a history-only reference.
-Scoring is unchanged. Across 13 eligible GP replays, the mean-position display
-averaged 3.259 places out versus 3.510 for grid order, with both picking 8/13 winners.
-See START_HERE.txt for coverage, limitations and the effect of changing display order.
-
-## FastF1 v2 checkpoint
-
-Fresh timing downloads require FastF1 3.9+ and an F1TV Access-or-higher account; see
-START_HERE.txt for local authentication. Existing cached data can run offline:
-
-```powershell
-python predict_anytime.py --year 2026 --race Singapore --session race --offline
-```
-
-The schedule and required sessions must already be cached. No automatic OpenF1
-timing fallback is implemented. V2 retains its scoring weights and excludes
-section telemetry. FP1 reserve-driver selection and ambiguous FIA grid dates
-are handled explicitly; use `--roster` for confirmed entry changes.
+Each run now exports `data_coverage.csv` and `source_manifest.json` beside the
+prediction files. The manifest identifies the downloaded responses used, and
+local snapshots preserve them when the cache refreshes. These are observations
+from download time, not proof of what was available at an earlier race cutoff.
+See START_HERE.txt for the data limitations and qualifying experiments.
