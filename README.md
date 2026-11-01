@@ -33,7 +33,10 @@ See [START_HERE.txt](START_HERE.txt) for all commands, source cutoffs, derived l
 quality, output columns, validation limits and remaining work. Simulation shares
 are not calibrated real-world probabilities. Section telemetry stays disabled.
 
-Lap audits distinguish missing evidence from excluded laps. Pit entry/exit
+Lap audits distinguish missing evidence from excluded laps. If a session's
+driver list omits a number present in its lap feed, only that driver's laps
+stay unverified; other drivers' valid pace is retained and a warning is printed.
+Pit entry/exit
 mapping and cache renewal are checked explicitly. FP1 reserve drivers no longer
 automatically replace the assumed competitive entrants; confirmed substitutions
 can be supplied with `--roster`. Historical comparisons use matching roster rules

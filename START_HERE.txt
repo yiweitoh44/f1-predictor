@@ -314,6 +314,12 @@ These alternatives do not establish a convincing overall improvement. Production
 weights, practice scoring and native model inputs are retained.
 
 TYRE VALIDATION AND LOCAL CACHE RECOVERY
+If a lap feed contains a driver number missing from that session's driver list,
+those laps stay unverified with reason "missing driver identity" in lap_quality.csv.
+The loader warns with the affected numbers and retains other drivers' validated
+laps. It does not guess an identity or use a later session to fill the entry.
+If no validated laps remain, practice remains unavailable.
+
 Tyre ages must be finite nonnegative whole lap counts. Boolean/fractional ages,
 invalid stint numbers, reversed/malformed bounds and overlapping stints cannot
 validate pace. Such evidence stays unverified rather than being guessed. A broken
