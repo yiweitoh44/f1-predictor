@@ -278,7 +278,8 @@ def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
  for r in laps:
   num=r['driver_number'];n=r['lap_number'];pair=(num,n);reason=None;t=None;finish=None
   duration=r.get('lap_duration')
-  if duplicates[pair]>1:reason='duplicate lap'
+  if num not in mapping:reason='missing driver identity'
+  elif duplicates[pair]>1:reason='duplicate lap'
   elif r.get('date_start') is None or not isinstance(duration,(int,float)) or not np.isfinite(duration) or duration<=0:reason='missing timing'
   else:
    t=stamp(r['date_start']);finish=t+pd.Timedelta(seconds=duration)
@@ -300,7 +301,7 @@ def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
       elif any(p<b and pend>x for x,b in neutral_blocks):reason='previous lap affected by neutralisation'
   tyre,tyre_reason,tyre_issue=stint_evidence(stints,num,n)
   if reason is None:reason=tyre_reason
-  state='valid_for_pace' if reason is None else 'unverified' if reason in {'missing timing','missing sector timing','unknown tyre','missing stint','ambiguous stint','invalid stint','unresolved earlier deletion','consecutive lap timing mismatch'} else 'excluded_from_pace'
+  state='valid_for_pace' if reason is None else 'unverified' if reason in {'missing driver identity','missing timing','missing sector timing','unknown tyre','missing stint','ambiguous stint','invalid stint','unresolved earlier deletion','consecutive lap timing mismatch'} else 'excluded_from_pace'
   initial_age=tyre.get('tyre_age_at_start')
   age_known=whole_laps(initial_age) and whole_laps(tyre.get('lap_start'),1)
   audit.append(dict(driver=mapping.get(num,str(num)),lap_number=n,accepted=reason is None,quality_state=state,reason=reason or 'passed derived checks',
@@ -354,6 +355,11 @@ class Store:
     control=get('race_control')
     if not any(r.get('flag')=='CHEQUERED' and start<=stamp(r['date'])<self.now for r in control) and self.now<start+pd.Timedelta(days=1):raise ValueError('No observed chequered flag before cutoff; conservative 24-hour fallback not reached')
     clean,audit=quality_laps(get('laps'),get('stints'),drivers,control,get('pit'),start,self.now,self.policy)
+    unmapped=sorted({r['driver'] for r in audit if r['reason']=='missing driver identity'})
+    if unmapped:
+     reason='Driver list missing numbers '+', '.join(unmapped)+'; their laps stay unverified; retaining other validated drivers.'
+     self.warnings.append(dict(round=rnd,session=code,endpoint='drivers',reason=reason))
+     print(f'  R{rnd} {code}: {reason}',flush=True)
     if clean.empty and code.startswith('FP'):raise ValueError('No valid OpenF1 practice laps')
     pace=self.pace_function(clean,code);lapdata=True
    race_laps=max([r.get('number_of_laps') or 0 for r in results],default=0)
