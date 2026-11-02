@@ -36,6 +36,9 @@ are not calibrated real-world probabilities. Section telemetry stays disabled.
 Lap audits distinguish missing evidence from excluded laps. If a session's
 driver list omits a number present in its lap feed, only that driver's laps
 stay unverified; other drivers' valid pace is retained and a warning is printed.
+Empty required pace feeds are reported. An empty pit feed conflicts with observed
+later pit exits; affected pace is withheld while Sprint classifications remain
+available. Initial outlaps alone do not require a nonempty pit feed.
 Pit entry/exit
 mapping and cache renewal are checked explicitly. FP1 reserve drivers no longer
 automatically replace the assumed competitive entrants; confirmed substitutions

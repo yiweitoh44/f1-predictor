@@ -320,6 +320,19 @@ The loader warns with the affected numbers and retains other drivers' validated
 laps. It does not guess an identity or use a later session to fill the entry.
 If no validated laps remain, practice remains unavailable.
 
+Empty lap, stint or race-control feeds cannot validate pace. An empty pit feed
+also blocks pace when lap records report later pit exits before the cutoff.
+Initial outlaps alone are not treated as a contradiction. The terminal and
+run_info.json/source_warnings report the missing feeds; affected practice is
+unavailable. Sprint classifications can remain usable with lap_data_loaded=false
+and no pace features; existing completion checks still apply. Empty weather is
+diagnostic only. The latest response stays cached, and old populated responses
+are not silently substituted. This catches missing evidence, not every possible
+partial nonempty feed.
+Retry later with --refresh if the provider has repaired the feed. --offline
+keeps using the cached response, so it does not turn an empty feed into valid
+pace. Predictions may use less evidence while the gap persists; check coverage.
+
 Tyre ages must be finite nonnegative whole lap counts. Boolean/fractional ages,
 invalid stint numbers, reversed/malformed bounds and overlapping stints cannot
 validate pace. Such evidence stays unverified rather than being guessed. A broken
