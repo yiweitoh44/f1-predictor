@@ -221,6 +221,24 @@ def whole_laps(value,minimum=0):
  try:return bool(np.isfinite(value) and value>=minimum and value==int(value))
  except (TypeError,ValueError,OverflowError):return False
 
+def empty_pace_feeds(laps,stints,control,pits,cutoff):
+ """Detect missing required evidence, without replacing the latest response.
+
+ An empty pit feed can be legitimate for a single run. Later observed pit
+ exits contradict it; initial outlaps alone do not establish a pit-feed gap.
+ """
+ missing=[name for name,data in [('laps',laps),('stints',stints),('race_control',control)] if not data]
+ if not pits:
+  observed=sorted([(stamp(r['date_start']),r) for r in laps if r.get('date_start')
+                    and whole_laps(r.get('lap_number'),1) and stamp(r['date_start'])<cutoff],key=lambda item:item[0])
+  first_lap={}
+  for _,r in observed:
+   num=r['driver_number'];n=r['lap_number']
+   if r.get('is_pit_out_lap') is True and first_lap.get(num,n)<n:
+    missing.append('pit');break
+   first_lap[num]=min(first_lap.get(num,n),n)
+ return missing
+
 def stint_evidence(stints,number,lap):
  matches=[]
  for stint in stints:
@@ -241,7 +259,7 @@ def stint_evidence(stints,number,lap):
  if stint.get('compound') not in {'SOFT','MEDIUM','HARD','INTERMEDIATE','WET'}:return stint,'unknown tyre','unknown compound'
  return stint,None,None
 
-def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
+def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict',pit_data_missing=False):
  """Derived validity, not an official IsAccurate flag; unknown stays rejected."""
  mapping={d['driver_number']:d['name_acronym'] for d in drivers};deleted,unknown_before=deletion_evidence(laps,drivers,control,cutoff);flags={};blocked=[];neutral_blocks=[];last=start;vsc_ending=False;sc_ending=False
  for msg in sorted(control,key=lambda x:stamp(x['date'])):
@@ -301,7 +319,15 @@ def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
       elif any(p<b and pend>x for x,b in neutral_blocks):reason='previous lap affected by neutralisation'
   tyre,tyre_reason,tyre_issue=stint_evidence(stints,num,n)
   if reason is None:reason=tyre_reason
-  state='valid_for_pace' if reason is None else 'unverified' if reason in {'missing driver identity','missing timing','missing sector timing','unknown tyre','missing stint','ambiguous stint','invalid stint','unresolved earlier deletion','consecutive lap timing mismatch'} else 'excluded_from_pace'
+  if reason is None and pit_data_missing:
+   following=ordered.get((num,n+1),{})
+   next_tyre,next_reason,_=stint_evidence(stints,num,n+1)
+   continuation=(duplicates[(num,n+1)]==1 and r.get('is_pit_out_lap') is False
+                 and following.get('is_pit_out_lap') is False and following.get('date_start')
+                 and t<stamp(following['date_start'])<cutoff and next_reason is None
+                 and all(tyre[k]==next_tyre[k] for k in ['stint_number','compound','tyre_age_at_start','lap_start','lap_end']))
+   if not continuation:reason='unverified pit boundary'
+  state='valid_for_pace' if reason is None else 'unverified' if reason in {'unverified pit boundary','missing driver identity','missing timing','missing sector timing','unknown tyre','missing stint','ambiguous stint','invalid stint','unresolved earlier deletion','consecutive lap timing mismatch'} else 'excluded_from_pace'
   initial_age=tyre.get('tyre_age_at_start')
   age_known=whole_laps(initial_age) and whole_laps(tyre.get('lap_start'),1)
   audit.append(dict(driver=mapping.get(num,str(num)),lap_number=n,accepted=reason is None,quality_state=state,reason=reason or 'passed derived checks',
@@ -311,6 +337,8 @@ def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict'):
       freshness_basis='age-at-start proxy; explicit new/used flag unavailable' if age_known else 'unknown',
       tyre_evidence_issue=tyre_issue,
       scheduled_elapsed_seconds=(t-start).total_seconds() if t is not None else None))
+  if pit_data_missing:
+   audit[-1]['pit_boundary_basis']='lap flags and observed same-stint continuation' if reason is None else 'observed pit boundary' if reason=='pit boundary' else 'incomplete pit feed; see reason'
   if reason is None:
    accepted.append(dict(Driver=mapping[num],Compound=tyre['compound'],TyreLife=initial_age+n-tyre['lap_start']+1,FreshTyre=initial_age==0,LapNumber=n,Stint=tyre['stint_number'],LapStartTime=t-start,lap_seconds=duration))
  return pd.DataFrame(accepted,columns=['Driver','Compound','TyreLife','FreshTyre','LapNumber','Stint','LapStartTime','lap_seconds']),audit
@@ -354,14 +382,29 @@ class Store:
    if code.startswith('FP') or code=='S':
     control=get('race_control')
     if not any(r.get('flag')=='CHEQUERED' and start<=stamp(r['date'])<self.now for r in control) and self.now<start+pd.Timedelta(days=1):raise ValueError('No observed chequered flag before cutoff; conservative 24-hour fallback not reached')
-    clean,audit=quality_laps(get('laps'),get('stints'),drivers,control,get('pit'),start,self.now,self.policy)
-    unmapped=sorted({r['driver'] for r in audit if r['reason']=='missing driver identity'})
-    if unmapped:
-     reason='Driver list missing numbers '+', '.join(unmapped)+'; their laps stay unverified; retaining other validated drivers.'
-     self.warnings.append(dict(round=rnd,session=code,endpoint='drivers',reason=reason))
-     print(f'  R{rnd} {code}: {reason}',flush=True)
-    if clean.empty and code.startswith('FP'):raise ValueError('No valid OpenF1 practice laps')
-    pace=self.pace_function(clean,code);lapdata=True
+    laps=get('laps');stints=get('stints');pits=get('pit')
+    missing=empty_pace_feeds(laps,stints,control,pits,self.now)
+    required=[name for name in missing if name!='pit']
+    if required:
+     reason='Empty required pace feed: '+', '.join(required)+'; pace unavailable'
+     self.warnings.append(dict(round=rnd,session=code,endpoint=','.join(required),reason=reason))
+     if code.startswith('FP'):raise ValueError(reason)
+     print(f'  R{rnd} {code}: {reason}; retaining classification.',flush=True)
+     mapping={d['driver_number']:d['name_acronym'] for d in drivers}
+     audit=[dict(driver=mapping.get(r['driver_number'],str(r['driver_number'])),lap_number=r['lap_number'],accepted=False,quality_state='unverified',reason=reason) for r in laps]
+    else:
+     if 'pit' in missing:
+      reason='Pit feed empty despite later pit exits; using lap flags and observed same-stint continuation; uncertain laps stay unverified.'
+      self.warnings.append(dict(round=rnd,session=code,endpoint='pit',reason=reason))
+      print(f'  R{rnd} {code}: {reason}',flush=True)
+     clean,audit=quality_laps(laps,stints,drivers,control,pits,start,self.now,self.policy,pit_data_missing='pit' in missing)
+     unmapped=sorted({r['driver'] for r in audit if r['reason']=='missing driver identity'})
+     if unmapped:
+      reason='Driver list missing numbers '+', '.join(unmapped)+'; their laps stay unverified; retaining other validated drivers.'
+      self.warnings.append(dict(round=rnd,session=code,endpoint='drivers',reason=reason))
+      print(f'  R{rnd} {code}: {reason}',flush=True)
+     if clean.empty and code.startswith('FP'):raise ValueError('No valid OpenF1 practice laps')
+     pace=self.pace_function(clean,code);lapdata=True
    race_laps=max([r.get('number_of_laps') or 0 for r in results],default=0)
    records=[]
    for d in drivers:
