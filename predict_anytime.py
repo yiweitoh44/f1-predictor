@@ -501,7 +501,7 @@ def features(driver, target_code, event, history, inputs, tracks):
             score = influence.pace_score(code, data, ("long", "short") if target_code in RACE_TYPES else ("short",))
             practices.append((score, order))
     row["practice_evidence_score"] = influence.weighted_available(practices)
-    if target_code == "Q":
+    if target_code in {"Q", "SQ"}:
         row.update(influence.qualifying_practice_context(code, inputs))
     sprint = inputs.get("S")
     row["sprint_evidence_score"] = np.nan
@@ -577,11 +577,13 @@ def fit(frame, columns):
         feature_names=columns,
     )
 
+    practice_model = columns == influence.QUALIFYING_PRACTICE_MODEL_COLUMNS
+    context_columns = set(influence.QUALIFYING_PRACTICE_CONTEXT_COLUMNS) if practice_model else set()
     booster = xgb.train(
         {
             "objective": "reg:squarederror",
-            "max_depth": 2,
-            "monotone_constraints": tuple(1 for _ in columns),
+            "max_depth": influence.QUALIFYING_PRACTICE_MAX_DEPTH if practice_model else 2,
+            "monotone_constraints": tuple(0 if c in context_columns else 1 for c in columns),
             "eta": 0.04,
             "subsample": 0.85,
             "colsample_bytree": 0.85,
@@ -672,10 +674,13 @@ def comparison_summary(records, target):
     return sorted(common), rows
 
 
-def train_and_check(frame, target_code, comparison_rows=None):
-    # Only the interpretable evidence scores enter the learned adjustment.
-    # Raw pace, consistency, counts, weather and section fields remain diagnostics.
-    columns = list(influence.RACE_MODEL_COLUMNS if target_code in RACE_TYPES else influence.MODEL_COLUMNS)
+def train_and_check(frame, target_code, comparison_rows=None, qualifying_practice=False):
+    # Keep the legacy columns for Race/Sprint, SQ and competitively anchored Q.
+    # Practice-only GP Q additionally uses admitted per-session evidence/support.
+    # Weather, raw lap times and section fields remain excluded from every fit.
+    columns = list(influence.RACE_MODEL_COLUMNS if target_code in RACE_TYPES else
+                   influence.QUALIFYING_PRACTICE_MODEL_COLUMNS if target_code == 'Q' and qualifying_practice
+                   else influence.MODEL_COLUMNS)
     rounds = sorted(frame.event_round.unique())
     if len(rounds) < 4:
         raise ValueError("Need usable history from at least four earlier weekends in this season.")
@@ -1065,10 +1070,12 @@ def run(args):
     inputs = inputs.assign(**pd.DataFrame([
         influence.add_influence(row, target) for row in inputs.to_dict('records')]))
     comparisons = []
+    practice_model = influence.qualifying_practice_mode(target, current)
     if early:
         model, columns, sigma, tests = early_season_model(inputs)
     else:
-        model, columns, sigma, tests = train_and_check(frame, target, comparison_rows=comparisons)
+        model, columns, sigma, tests = train_and_check(
+            frame, target, comparison_rows=comparisons, qualifying_practice=practice_model)
     scores = model.predict(inputs[columns])
     win, top3, average, positions = simulate(scores, sigma, args.simulations, return_positions=True)
     output, simulation_details = prediction_tables(drivers, scores, win, top3, average, positions, target)
@@ -1192,7 +1199,8 @@ def run(args):
                     "simulation_details": "unchanged first/top-three shares, scores, means and adjacent comparisons saved separately"},
                 "uncertainty_maximum_weekends": UNCERTAINTY_WEEKENDS,
                 "model_features": columns,
-                "qualifying_practice_diagnostics": influence.qualifying_diagnostic_policy() if target == "Q" else None,
+                "qualifying_practice_diagnostics": influence.qualifying_diagnostic_policy(
+                    active=columns == influence.QUALIFYING_PRACTICE_MODEL_COLUMNS) if target in {"Q", "SQ"} else None,
                 "section_pace_model_inputs": False,
                 "session_influence": influence.policy(),
                 "prediction_formula": 'influence_anchor (no ML fit)' if early else "(1-learned_share)*influence_anchor + learned_share*clip(native_model_prediction,0,1)",

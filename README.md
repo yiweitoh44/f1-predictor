@@ -68,22 +68,25 @@ this recovers saved data and does not supply sessions that were never downloaded
 
 ## Qualifying practice evidence
 
-GP qualifying runs export each practice session's admitted pace score, matched
-gap and support in `prediction_inputs.csv` and qualifying rows of `training.csv`.
-The `qual_FP1_*`, `qual_FP2_*` and `qual_FP3_*` columns show per-compound counts
-and eligibility; missing pace stays unknown. `run_info.json` describes these
-fields. They are diagnostics and do not enter the model.
+GP qualifying after practice, without completed SQ/Sprint evidence, now gives
+native XGBoost separate FP1/FP2/FP3 pace scores, matched gaps and support/context.
+Missing session scores remain unknown; they are not replaced with historical
+form. The explicit history/practice budgets and 85% evidence / 15% learned blend
+are retained. Race, Sprint, SQ and competitively anchored GP qualifying keep
+their existing models. Section telemetry stays disabled.
 
-A same-data comparison tested 18 settings across 19 GP qualifying cases and
-12 additional forecasts after FP2. Richer practice inputs and higher practice
-weights did not improve the agreed measures consistently, so the existing
-scoring was retained. All 50 benchmark prediction and simulation tables and
-their backtests remain unchanged. See START_HERE.txt for results and limits.
+Q/SQ rows export the practice fields in `prediction_inputs.csv` and `training.csv`.
+`run_info.json` identifies the actual model columns and which extra fields are
+active. Lap counts and comparison-field sizes are context, not confidence.
 
-The lap-matching review also tested narrower/overlapping practice-time windows
-and closer tyre ages across all four prediction formats. Every alternative lost
-race winner and GP qualifying pole picks on the same cases, so the existing
-matching was retained. The results and limitations are recorded in START_HERE.
+The expanded review covered 139 settings across 5,580 forecast attempts,
+including controls and failed cases. The selected input treatment retained
+9/19 GP pole picks, improved top-three matches from 28/57 to 29/57 and reduced
+ranking error from 2.000 to 1.977 over 16 complete fields. These are inspected
+historical cases, including the original Mexico forecast stage, not unseen
+future validation. Race/Sprint/SQ results are unchanged. Alternative lap-matching
+methods were tested and the current matching was retained. See START_HERE for
+method coverage, stage-specific results and limits.
 
 ## Early season and saved forecasts
 
