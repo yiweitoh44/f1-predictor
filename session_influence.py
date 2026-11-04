@@ -70,13 +70,13 @@ def pace_reason(value):
     return None
 
 
-def pace_score(driver, data, labels):
+def matched_pace_evidence(driver, data, labels):
     """Rank usable matched comparisons; a compound needs four usable drivers.
 
     These remain programme-dependent observations. Sparse or extreme gaps
     cannot become a performance penalty just because a cache contains them.
     """
-    scores = []
+    evidence = []
     for label in labels:
         for compound in ('soft', 'medium', 'hard', 'intermediate', 'wet'):
             key = f'{label}_{compound}_gap_pct'
@@ -90,8 +90,56 @@ def pace_score(driver, data, labels):
             gap = numeric(me[key])
             # Tied observations share the mean of their occupied ranks.
             rank = (np.sum(gaps < gap) + (np.sum(gaps == gap)-1)/2) / (len(peers)-1)
-            scores.append((float(rank), 1.))
-    return weighted_available(scores)
+            count = numeric(me.get(f'{label}_{compound}_matched_laps', me.get(label + '_matched_laps')))
+            evidence.append(dict(score=float(rank), gap_pct=float(gap), compound=compound,
+                                 label=label, peers=len(peers), samples=count))
+    return evidence
+
+
+def pace_score(driver, data, labels):
+    return weighted_available([(r['score'], 1.) for r in matched_pace_evidence(driver, data, labels)])
+
+
+def qualifying_practice_context(driver, inputs):
+    """Audit existing comparisons; all returned fields are diagnostic only.
+
+    Missing scores/gaps stay missing. Raw matched counts can be one while the
+    eligible flag stays false: production pace still needs two per compound and
+    four comparison drivers. No fuel correction or cross-compound lap estimate.
+    """
+    out = {}
+    available_weight = 0.
+    used_weight = 0.
+    for weight, code in enumerate(('FP1', 'FP2', 'FP3'), 1):
+        data = inputs.get(code)
+        records = matched_pace_evidence(driver, data, ('short',)) if data else []
+        participant = next((d for d in data.get('drivers', []) if d['driver'] == driver), {}) if data else {}
+        eligible = {r['compound'] for r in records}
+        if data:
+            available_weight += weight
+        if records:
+            used_weight += weight
+        out[f'qual_{code}_score'] = weighted_available([(r['score'], 1.) for r in records])
+        out[f'qual_{code}_matched_gap_pct'] = weighted_available([(r['gap_pct'], 1.) for r in records])
+        out[f'qual_{code}_available'] = float(bool(records))
+        out[f'qual_{code}_support'] = float(sum(r['samples'] for r in records))
+        for compound in ('soft', 'medium', 'hard', 'intermediate', 'wet'):
+            value = participant.get(f'short_{compound}_matched_laps', participant.get('short_matched_laps', 0))
+            out[f'qual_{code}_{compound}_matched_laps'] = numeric(value) if participant else np.nan
+            out[f'qual_{code}_{compound}_eligible'] = float(compound in eligible)
+    out['qual_practice_coverage'] = used_weight / available_weight if available_weight else 0.
+    return out
+
+
+def qualifying_diagnostic_policy():
+    return dict(model_inputs=False, minimum_matched_laps_per_compound=2,
+                minimum_comparison_drivers=4, missing_scores='unknown, not zero or an estimated lap time',
+                matched_laps='per-compound counts; unknown when the session or driver is absent',
+                score='normalized rank within admitted comparisons; lower is better',
+                matched_gap_pct='mean of existing eligible compound comparison gaps, not an estimated qualifying lap',
+                support='matched samples in admitted comparisons; not total laps driven',
+                coverage='share of available FP1:FP2:FP3 weights 1:2:3 with an admitted driver score; diagnostic only',
+                limits='Programme/fuel effects remain unobserved. Diagnostic fields do not change scoring or support thresholds.')
 
 
 def add_influence(row, target):
