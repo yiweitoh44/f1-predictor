@@ -66,6 +66,20 @@ verified local snapshot. Keep the complete `cache/openf1` folder for offline use
 this recovers saved data and does not supply sessions that were never downloaded.
 
 
+## Qualifying practice evidence
+
+GP qualifying runs export each practice session's admitted pace score, matched
+gap and support in `prediction_inputs.csv` and qualifying rows of `training.csv`.
+The `qual_FP1_*`, `qual_FP2_*` and `qual_FP3_*` columns show per-compound counts
+and eligibility; missing pace stays unknown. `run_info.json` describes these
+fields. They are diagnostics and do not enter the model.
+
+A same-data comparison tested 18 settings across 19 GP qualifying cases and
+12 additional forecasts after FP2. Richer practice inputs and higher practice
+weights did not improve the agreed measures consistently, so the existing
+scoring was retained. All 50 benchmark prediction and simulation tables and
+their backtests remain unchanged. See START_HERE.txt for results and limits.
+
 ## Early season and saved forecasts
 
 Rounds 1–4 can use a labelled evidence-only fallback when training history is

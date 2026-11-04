@@ -501,6 +501,8 @@ def features(driver, target_code, event, history, inputs, tracks):
             score = influence.pace_score(code, data, ("long", "short") if target_code in RACE_TYPES else ("short",))
             practices.append((score, order))
     row["practice_evidence_score"] = influence.weighted_available(practices)
+    if target_code == "Q":
+        row.update(influence.qualifying_practice_context(code, inputs))
     sprint = inputs.get("S")
     row["sprint_evidence_score"] = np.nan
     if sprint:
@@ -1190,6 +1192,7 @@ def run(args):
                     "simulation_details": "unchanged first/top-three shares, scores, means and adjacent comparisons saved separately"},
                 "uncertainty_maximum_weekends": UNCERTAINTY_WEEKENDS,
                 "model_features": columns,
+                "qualifying_practice_diagnostics": influence.qualifying_diagnostic_policy() if target == "Q" else None,
                 "section_pace_model_inputs": False,
                 "session_influence": influence.policy(),
                 "prediction_formula": 'influence_anchor (no ML fit)' if early else "(1-learned_share)*influence_anchor + learned_share*clip(native_model_prediction,0,1)",

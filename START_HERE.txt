@@ -140,7 +140,7 @@ model formula is fixed. More available FP2 data is a coverage change, not proof
 that a provider is inherently more accurate. Sparse Sprint tests and revised
 historical records limit conclusions. Never tune to a known winner or favourite.
 
-Current checks: 214 tests pass; four FastF1-only tests skip. Historical replays block FastF1 imports and
+Earlier source-comparison checks: 214 tests passed; four FastF1-only tests skipped. Historical replays block FastF1 imports and
 network access after genuine source responses have been cached. Source fixes
 recover seven Sprint laps in the 23-session FP1/Sprint inventory (7,563 to 7,570).
 Hungary selected reference: all 132 lap durations match exactly; 130 now pass.
@@ -185,8 +185,8 @@ SOURCES AND CREDITS
 OpenF1: https://openf1.org/ (public historical API, unofficial project).
 Retain original project attribution in README. Data/API availability and provider
 terms apply. Raw caches, login tokens, ZIPs and reports do not belong in Git.
-Deferred: section telemetry corrections, early-season fallback, sophisticated
-recovery, calibrated probabilities and live-session prediction updates.
+Section telemetry and live-session prediction updates remain disabled. Early-season
+fallback is implemented below. Recovery and uncertainty remain model limitations.
 
 V3 DATA AUDIT AND REPRODUCIBILITY
 The v2 tag preserves the FastF1-based version. OpenF1 supplies this branch's
@@ -444,3 +444,65 @@ labelling, scheduled-end guards and preventing future-cutoff claims.
 When reporting success rates, use a consistent forecast stage and count each
 event/session once. Repeated runs and parameter trials are not independent events.
 Evaluation records retain the input cutoff and used sessions for that comparison.
+
+QUALIFYING PACE INPUT REVIEW (4 NOVEMBER 2026)
+GP qualifying now exports a per-session audit of the EXISTING practice evidence:
+  qual_FP1_score / qual_FP2_score / qual_FP3_score: admitted normalized pace rank,
+    lower is better; missing is unknown, never a zero-speed estimate.
+  qual_FP#_matched_gap_pct: mean gap across admitted compound comparisons; this
+    is not an estimated qualifying lap or a fuel-corrected absolute pace.
+  qual_FP#_support: samples in admitted comparisons, not total laps driven.
+  qual_FP#_available: 1 when this driver has an admitted comparison, else 0.
+  qual_FP#_<compound>_matched_laps / _eligible: raw matched counts and whether
+    that compound passed the existing two-lap/four-driver requirement. Counts
+    remain unknown when the session or driver is absent. Two one-lap compounds
+    do not make one valid two-lap comparison.
+  qual_practice_coverage: share of available session weights FP1:FP2:FP3 = 1:2:3
+    with an admitted driver score. It is coverage, not confidence or speed.
+
+These columns are in prediction_inputs.csv and qualifying rows of training.csv.
+run_info.json describes their meaning under qualifying_practice_diagnostics;
+model_inputs is false. Model features remain six Q/SQ or seven Race/Sprint
+scores. No command, dependency, main prediction table, lap matching, support
+threshold, section exclusion or scoring weight changes in this update.
+
+The review tested 18 settings (baseline plus 17 alternatives), 558 unique
+historical forecasts: 19 GP qualifying cases and 12 separate after-FP2 stages per
+setting. Trials added per-session ranks/gaps, support/missingness, limited sparse
+attempt/team context, higher practice share and larger learned adjustment.
+All fits used earlier weekends only. Rounds 1-12 were used for discovery, 13-18
+for verification; already-seen Mexico was diagnostic only. None passed the
+no-regression discovery check for pole picks, top-three matches and full-field
+ranking error at both forecast stages. The baseline was retained.
+
+Selected full 19-case Q results (ranking error covers 16 complete driver fields):
+Setting                         Poles     Top-three drivers    Avg places out
+Retained baseline               9/19           28/57                2.000
+Per-session rank inputs         9/19           29/57                2.006
+Per-session gap inputs          9/19           28/57                2.006
+Gap inputs + 40% practice*       9/19           27/57                2.063
+Sparse-attempt context trial    9/19           27/57                1.983
+*Practice share within the explicit normal-weekend history/practice score.
+The small ranking gain in the last trial lost a top-three match and added no
+pole picks. It was not adopted. After FP2, baseline was 3/12 poles, 16/36
+top-three matches and 2.300 places out across ten complete fields. Per-session
+rank inputs reduced that error to 2.273 but worsened the discovery pre-target
+ranking, so did not qualify for adoption either.
+
+These are revised, inspected historical data and small retrospective trials,
+not an untouched future test set. They do not prove that further qualifying
+improvement is impossible. Fuel/engine/traffic programmes remain unobserved;
+more columns or practice weight alone did not resolve that limitation.
+
+Final checks: 244 external tests discovered, 240 passed, four FastF1-only skips.
+All 50 frozen forecast tables, simulation details, backtests and baseline
+comparison tables match the previous version. Four full frozen-source CLI
+replays also preserve every legacy input/training column and export the new
+audit: early-season Q, Sprint-weekend GP Q, Austin Q and the original Mexico
+FP1/FP2 forecast stage. Original saved forecasts are never overwritten.
+Current benchmark remains Race 15/19 winners, Q 9/19 poles, Sprint 3/6 winners,
+SQ 1/6 poles. Top-three matches: Race 37/57, Q 28/57, Sprint 14/18, SQ 9/18.
+Race error is 3.3445 over 19 complete fields; Q 2.000 over 16. Sprint/SQ ranking
+coverage is only one/two complete fields, so their rank error is not a broad
+validation result. Raw sources, detailed trial reports, tests and dated benchmark
+backups stay outside Git. This update improves evidence visibility, not accuracy.
