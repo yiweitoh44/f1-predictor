@@ -80,6 +80,11 @@ weights did not improve the agreed measures consistently, so the existing
 scoring was retained. All 50 benchmark prediction and simulation tables and
 their backtests remain unchanged. See START_HERE.txt for results and limits.
 
+The lap-matching review also tested narrower/overlapping practice-time windows
+and closer tyre ages across all four prediction formats. Every alternative lost
+race winner and GP qualifying pole picks on the same cases, so the existing
+matching was retained. The results and limitations are recorded in START_HERE.
+
 ## Early season and saved forecasts
 
 Rounds 1–4 can use a labelled evidence-only fallback when training history is

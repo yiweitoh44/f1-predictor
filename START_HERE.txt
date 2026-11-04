@@ -506,3 +506,57 @@ Race error is 3.3445 over 19 complete fields; Q 2.000 over 16. Sprint/SQ ranking
 coverage is only one/two complete fields, so their rank error is not a broad
 validation result. Raw sources, detailed trial reports, tests and dated benchmark
 backups stay outside Git. This update improves evidence visibility, not accuracy.
+
+LAP-MATCHING REVIEW (4 NOVEMBER 2026)
+The current practice comparisons group the same compound and freshness proxy
+within ten-minute scheduled-session bins and three-lap tyre-age bands. These
+are approximate comparisons: a boundary can separate nearby laps, and shared
+tyres/time do not establish equal fuel, engine settings, traffic or programmes.
+
+Ten settings (baseline plus nine alternatives) were tested across 62 forecast
+stages each, 620 forecasts: the 50 saved benchmark cases plus 12 separate
+qualifying forecasts after FP2. Sources cover 51 distinct practice/Sprint
+sessions, represented by 111 frozen response/cutoff variants. Repeated stages
+and source variants are not independent race weekends.
+
+Trials tested five-minute fixed bins; overlapping ten-, five- and three-minute
+windows; overlapping two-lap tyre-age groups; and exact-age comparisons. Same
+compound/freshness and all raw quality/cutoff checks were retained. Overlapping
+groups counted each actual matched lap only once. The minimum two unique laps
+per compound/four usable drivers and sustained-run guards stayed unchanged.
+Sprint long-run five-lap grouping was retained; practice changes can still affect
+Sprint predictions. Scoring weights and native model inputs were not retuned.
+
+First-pick results on the same benchmark stages:
+Matching setting                       Race       GP Q       Sprint      SQ
+Retained current policy                15/19       9/19        3/6       1/6
+Five-minute fixed practice bins        13/19       6/19        3/6       1/6
+Overlapping ten-minute windows         12/19       8/19        3/6       1/6
+Closer tyre ages, original time bins   14/19       8/19        4/6       1/6
+Five-minute windows, exact tyre age     11/19       6/19        4/6       1/6
+The other alternatives also lost both GP winner and GP pole picks. The extra
+Sprint hit in two trials did not compensate for the GP losses. The closer-age
+trial changed GP ranking error from 3.3445 to 3.3301 and Q from 2.0000 to 2.0284;
+GP top-three matches fell from 37/57 to 36/57. It was not adopted.
+
+Narrower windows removed usable support, especially for longer runs. Across the
+111 frozen source variants, five-minute fixed bins reduced long matched samples
+from 5,615 to 4,647. Overlap can recover comparisons at boundaries, but it also
+changes the comparison groups and reference pace; more support did not translate
+into better predictions here. No unobserved fuel correction is inferred.
+
+Rounds 1-12 were discovery, 13-18 verification, and Mexico diagnostic only.
+No alternative passed the pre-recorded no-regression discovery gate across
+formats/stages. Verification was recorded, not used to rescue a failed candidate.
+All outcomes were already inspected historically; these are not unseen tests.
+Mexico trial reruns use the original forecast stages for diagnosis; they never
+replace the original saved forecasts or their benchmark scores.
+
+Outcome: investigation complete, CURRENT MATCHING RETAINED. This review changes
+only documentation; it adds no runtime feature, output column or command.
+The existing 244-test suite passes with four FastF1-only skips (240 passes).
+The baseline reconstruction matches all 62 frozen forecast/simulation tables
+and original practice/Sprint/active scores in every target/training row. Support
+checks across all ten settings confirm no repeated lap counts, unchanged lap
+quality decisions and unchanged Sprint lap matching. Research code, trial tables
+and reports stay outside Git. Current model statistics and forecasts are unchanged.
