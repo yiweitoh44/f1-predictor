@@ -32,6 +32,87 @@ QUALIFYING_PRACTICE_MODEL_COLUMNS = MODEL_COLUMNS + QUALIFYING_PRACTICE_EXTRA_CO
 QUALIFYING_PRACTICE_MAX_DEPTH = 3
 
 
+# SQ gets one practice session, so retain compound and format-specific evidence
+# separately instead of relying on the single pooled practice/history anchor.
+SPRINT_QUALIFYING_HISTORY_COLUMNS = [
+    'sq_history_score', 'sq_team_history_score', 'sq_peak_score',
+    'sq_gp_peak_score', 'sq_history_available', 'sq_history_weekends']
+SPRINT_QUALIFYING_PACE_COLUMNS = ['sq_fp1_score', 'sq_fp1_gap',
+    'sq_fp1_available', 'sq_fp1_support', 'sq_fp1_peers'] + [
+    f'sq_{compound}_{field}'
+    for compound in ('soft', 'medium', 'hard', 'intermediate', 'wet')
+    for field in ('score', 'gap', 'available', 'support', 'peers')]
+SPRINT_QUALIFYING_MODEL_COLUMNS = (MODEL_COLUMNS + SPRINT_QUALIFYING_HISTORY_COLUMNS
+    + ['sprint_target'] + SPRINT_QUALIFYING_PACE_COLUMNS)
+SPRINT_QUALIFYING_LEARNED_SHARE = 1.0
+SPRINT_QUALIFYING_TRAINING_RATIO = 4.0
+SPRINT_QUALIFYING_MAX_DEPTH = 3
+
+
+def sprint_qualifying_mode(target, inputs):
+    return target == 'SQ' and bool(inputs.get('FP1'))
+
+
+def sprint_qualifying_context(driver, team, target_round, history, inputs):
+    """Only earlier Q/SQ history and the SQ-specific FP1 comparison sidecar.
+
+    All validated tyre ages are compared within the usual age/time bands. An
+    absent sidecar is unknown; never silently substitute the low-age summary.
+    """
+    data = inputs.get('FP1') or {}
+    comparison = {'drivers': [dict(driver=d['driver'], **{
+        key.removeprefix('sq_'): value for key, value in d.items()
+        if key.startswith('sq_short_')}) for d in data.get('drivers', [])]}
+    records = matched_pace_evidence(driver, comparison, ('short',))
+    out = {}
+    def describe(rows, prefix):
+        out[prefix + '_score'] = weighted_available([(r['score'], 1.) for r in rows])
+        out[prefix + '_gap'] = weighted_available([(r['gap_pct'] / PACE_MAX_GAP_PCT, 1.) for r in rows])
+        out[prefix + '_available'] = float(bool(rows))
+        out[prefix + '_support'] = float(sum(r['samples'] for r in rows))
+        out[prefix + '_peers'] = float(np.mean([r['peers'] for r in rows])) if rows else 0.
+    describe(records, 'sq_fp1')
+    for compound in ('soft', 'medium', 'hard', 'intermediate', 'wet'):
+        describe([r for r in records if r['compound'] == compound], 'sq_' + compound)
+    prior = [r for r in history if r['session'] in {'Q', 'SQ'}
+             and int(r['round']) < target_round and np.isfinite(numeric(r.get('position_norm')))]
+    sq_rounds = set(sorted({int(r['round']) for r in prior if r['session'] == 'SQ'})[-3:])
+    def form(who, value, code='SQ', peak=False):
+        rows = [r for r in prior if r.get(who) == value and r['session'] == code
+                and (int(r['round']) in sq_rounds if code == 'SQ'
+                     else target_round - HISTORY_WEEKENDS <= int(r['round']))]
+        weekends = {}
+        for r in rows:
+            weekends.setdefault(int(r['round']), []).append(numeric(r['position_norm']))
+        means = {rnd: float(np.mean(values)) for rnd, values in weekends.items()}
+        if peak:
+            return min(means.values(), default=np.nan)
+        return weighted_available([(v, 2 ** (-(target_round-rnd)/HISTORY_HALF_LIFE))
+                                   for rnd, v in means.items()])
+    out['sq_history_score'] = form('driver', driver)
+    out['sq_team_history_score'] = form('team', team)
+    out['sq_peak_score'] = form('driver', driver, peak=True)
+    out['sq_gp_peak_score'] = form('driver', driver, code='Q', peak=True)
+    out['sq_history_available'] = float(np.isfinite(out['sq_history_score']))
+    out['sq_history_weekends'] = len({int(r['round']) for r in prior
+                                     if r['driver'] == driver and r['session'] == 'SQ'})
+    return out
+
+
+def sprint_qualifying_policy(active=False, trained=False):
+    return dict(active=bool(active), trained=bool(active and trained),
+        model_columns=list(SPRINT_QUALIFYING_MODEL_COLUMNS) if active and trained else [],
+        learned_share=SPRINT_QUALIFYING_LEARNED_SHARE if active and trained else None,
+        maximum_tree_depth=SPRINT_QUALIFYING_MAX_DEPTH if active and trained else None,
+        practice='FP1 only; all validated tyre ages, matched within compound, freshness proxy, three-lap age bands and ten-minute windows',
+        minimum_matched_laps_per_compound=2, minimum_comparison_drivers=4,
+        history='current season only; separate driver/team mean and driver best over the last three earlier SQ weekends; driver best GP Q over four earlier calendar rounds',
+        training='pooled earlier Q/SQ; SQ rows receive four times the within-weekend weight of Q rows, then each weekend total is restored',
+        missing='native missing handling for separate scores/gaps; unavailable is not slow or zero',
+        early_fallback='existing 85% history / 15% admitted FP1 evidence anchor, redistributed when missing; no fitted model before four usable history weekends',
+        limits='FP1 programmes, fuel and engine settings remain unknown; learned scores and simulation shares are uncalibrated')
+
+
 def qualifying_practice_mode(target, inputs):
     """Use separate FP inputs for GP Q's practice-only stage, after practice."""
     return (target == 'Q' and not any(inputs.get(c) for c in ('SQ', 'S'))
@@ -205,9 +286,11 @@ def add_influence(row, target):
     return out
 
 
-def policy():
+def policy(*, sprint_qualifying=False, trained=True):
     return dict(history_weekends=HISTORY_WEEKENDS, history_half_life_rounds=HISTORY_HALF_LIFE,
-                learned_adjustment_share=LEARNED_SHARE, source_weights=SOURCE_WEIGHTS,
+                learned_adjustment_share=(SPRINT_QUALIFYING_LEARNED_SHARE if sprint_qualifying else LEARNED_SHARE) if trained else 0.,
+                default_learned_adjustment_share=LEARNED_SHARE, source_weights=SOURCE_WEIGHTS,
+                sprint_qualifying=sprint_qualifying_policy(active=sprint_qualifying, trained=trained),
                 race_model_columns=RACE_MODEL_COLUMNS,
                 qualifying_practice_model_columns=QUALIFYING_PRACTICE_MODEL_COLUMNS,
                 qualifying_practice_scope='GP qualifying after practice, without completed SQ/Sprint evidence; other stages retain their original model',
@@ -220,4 +303,4 @@ def policy():
                 pace_minimum_driver_samples=2, pace_minimum_field_drivers=4,
                 missing_source='redistribute anchor weight across available sources; learned input uses history',
                 historical_session_weight='one budget per weekend; GP/Q 3, Sprint/SQ 1',
-                limits='Manual starting policy. Practice remains affected by fuel/traffic/programmes. Simulation shares are uncalibrated.')
+                limits='Source budgets describe the explicit anchor, not fitted feature importance. SQ after FP1 uses a dedicated learned model once enough history exists. Practice remains affected by fuel/traffic/programmes. Simulation shares are uncalibrated.')
