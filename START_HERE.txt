@@ -101,14 +101,18 @@ Native XGBoost uses six Q/SQ or seven Race/Sprint evidence inputs by default.
 GP qualifying after a loaded practice session, without completed SQ/Sprint
 evidence, uses 22 inputs: the original six plus per-session pace/gaps, availability,
 support, comparison-field sizes and the Q/SQ training-format flag. It uses tree
-depth three; the other models retain depth two. Scores/gaps retain monotonic
-constraints; support/context is not forced to imply better or worse speed.
-Scores combine 85% explicit evidence with 15% learned adjustment. History covers
+depth three. SQ after FP1 uses the dedicated 43-input model described below,
+also at depth three; the other models retain depth two. Scores/gaps retain
+monotonic constraints; support/context is not forced to imply speed direction.
+Except for trained SQ after FP1, scores combine 85% explicit evidence with 15%
+learned adjustment. The early fallback has no learned component. History covers
 four earlier rounds with a three-round half-life. Earlier/later sessions are
 selected in scheduled order; each training example uses only its earlier inputs.
-One weekend has one historical budget; GP/Q have three times the vote of S/SQ.
+The explicit history score gives GP/Q three times the vote of S/SQ within one
+weekend. Training also retains one total budget per weekend; trained SQ after
+FP1 separately favours SQ rows inside that budget, as described below.
 
-Source budgets when available:
+Explicit anchor source budgets when available (not fitted feature importance):
   Race: history .20, grid/Q .65, Sprint .10, earlier SQ .025, practice .025.
   Sprint: history .20, grid/SQ .75, practice .05.
   Qualifying: history .30, Sprint .10, earlier SQ .50, practice .10.
@@ -116,8 +120,10 @@ Source budgets when available:
 Race/Sprint split the existing grid budget equally between starting position and
 qualifying performance when both are available. Missing sources redistribute
 weights. No driver-specific bonuses or weather/upgrade bonuses are introduced.
-The existing tyre-matching, pace-support, 0..5% gap guard, history/circuit groups,
-monotonic constraints, random seed and simulation policy are retained.
+Pace support, the 0..5% gap guard, history/circuit groups, monotonic constraints,
+random seed and simulation policy are retained. SQ after FP1 alone admits older
+validated tyres within the same matching bands; other formats keep age <=5 for
+short-run practice. No other format's learned score or matching changes.
 Section telemetry remains disabled and excluded from every fit.
 
 OUTPUT
@@ -533,3 +539,148 @@ skips. Full frozen-source command comparisons and new benchmark snapshots are
 kept outside Git with the detailed method matrix/results. Raw quality and source
 cutoff rules are unchanged. The review closes these two method investigations;
 the separate remaining v3 items are not implemented by this change.
+
+
+SPRINT QUALIFYING REVIEW — 6 NOVEMBER 2026 (FINAL-SCOPE ITEM 3)
+
+Scope: a dedicated FP1-only SQ treatment. No new command or dependency.
+No current SQ result, later session, previous-season performance or unverified
+lap is added as an input. Race, Sprint and all GP qualifying stages retain the
+merged policies above. The earlier dated investigations remain historical records.
+
+Selected production treatment, active only for requested SQ with loaded FP1:
+  - Retain the ordinary <=5-age practice summary for other features/formats.
+    Add SQ-specific FP1 comparisons across all validated tyre ages, still matched
+    within compound, freshness proxy, three-lap tyre-age band and ten-minute
+    session window. All pit/deletion/flag/sector/cutoff filters stay in force.
+    Two admitted own laps per compound and four usable comparison drivers remain
+    required. A lone lap and two separate one-lap compounds do not qualify.
+  - Keep the existing explicit history/FP1 anchor. Replace only its SQ practice
+    score with the SQ comparisons. When four usable prior weekends exist, use
+    a dedicated native XGBoost prediction directly, clipped to [0,1]. This is a
+    learned ranking score, not 100% FP1 or a calibrated finish probability.
+  - Use 43 model inputs: original six influence scores; six separate history
+    fields; format flag; overall FP1 rank/gap/availability/support/peers; and those
+    five FP1 fields separately for soft, medium, hard, intermediate and wet.
+    Separate SQ history uses the last three earlier SQ weekends globally, with
+    round-distance decay for driver/team means and a driver best-weekend score.
+    GP Q best-weekend form covers four earlier calendar rounds. Team form uses
+    the driver's current team. Missing SQ form stays unknown, not invented GP SQ.
+  - Pool strictly earlier Q/SQ examples. SQ rows receive four times the within-
+    weekend weight of Q rows, then restore each weekend's original total weight.
+    This prevents sprint weekends receiving an extra overall training budget.
+    Tree depth three, native missing handling, monotonic scores/gaps; support,
+    missingness and format context have no forced speed direction. No sklearn.
+    Q rows' original anchor/features remain unchanged inside this SQ training run.
+  - Before FP1, retain the previous six-input SQ policy. Rounds 1–4 with fewer
+    than four usable prior weekends retain the evidence-only fallback (no fit,
+    fixed uncalibrated simulation spread); the SQ FP1 scope still applies.
+
+Inspect the evidence in the saved run folder:
+  prediction_inputs.csv and training.csv: sq_fp1_* and sq_<compound>_* provide
+    score, gap, available, support, peers. Gap is matched percent gap / 5;
+    unavailable scores/gaps remain NaN, not zero or a slow estimated lap.
+    Support is matched samples, not all laps; peers is mean admitted field size.
+    sq_history_score / sq_team_history_score: earlier SQ weekend means.
+    sq_peak_score / sq_gp_peak_score: earlier SQ/GP Q best-weekend observations.
+    sq_history_available / sq_history_weekends: format-history availability/count.
+    Generic qual_FP1_* fields retain the ordinary low-age audit, so they may
+    differ from the SQ-specific evidence. FP2/FP3 never feed this SQ model.
+  run_info.json: sprint_qualifying_policy, active_learned_share, model_features.
+  influence_policy.json: active policy, explicit anchor budgets and SQ override.
+  model.json: native booster; clip its prediction to [0,1] for trained SQ after
+    FP1. For other models use the recorded blend; early model is anchor-only.
+
+Completed practical method review:
+  460 heuristic settings, 211 learning settings, 461 joint settings = 1,132
+  recorded trial settings including repeated controls; 6,792 forecast attempts.
+  All six events remain in comparisons, including failed/no-evidence attempts.
+  Families tested: history/FP1 weight and reliability; GP-Q-only/SQ-only/pooled
+  history, calendar/event windows, recent/best/robust form and driver/team mix;
+  soft preference/priority and separate compound inputs; one-lap/sparse evidence;
+  low-age/broader/all-age and late FP1; long-run/trend and observed team context;
+  direct/nearest/mutual/one-to-one/connected/robust matching and freshness-proxy
+  sensitivity; separate native inputs, compact/no-anchor controls, learned shares
+  and depths; pooled/SQ-upweighted/SQ-only training with explicit warmup; native
+  squared/absolute/Huber loss, pairwise ranking, pole classification and residual
+  targets; plus relevant combinations of these families. Two-lap support is kept.
+  Unobserved fuel, engine, traffic or programme intent is not guessed.
+
+Selection: first four SQ events screen candidates; last two check later results.
+Require no loss of poles/top-three on discovery, <=0.25 extra rank error in each
+split, a later pole gain without top-three loss, and no overall rank-error loss.
+Among passing candidates prioritize discovery pole picks, then top-three, then
+rank error. The selected method passes. A five-seed audit (0,7,42,101,2026) keeps
+3/6 poles and 1/2 later poles at every seed; raw score leaders are unique, so this
+gain is not caused by a tied score or a lucky simulation seed.
+
+Same frozen six SQ events, same cutoffs/data and strict scoring fields:
+  Event          Actual pole    Previous pick    New pick     Top-three old/new
+  Shanghai       Russell        Russell          Russell           2 / 2
+  Miami          Norris         Russell          Russell           1 / 1
+  Montreal       Russell        Antonelli        Antonelli         2 / 3
+  Silverstone    Hamilton       Russell          Hamilton          2 / 2
+  Zandvoort      Russell        Antonelli        Russell           1 / 1
+  Singapore      Verstappen     Leclerc          Norris            1 / 1
+  Poles: 1/6 -> 3/6. Top-three identities: 9/18 -> 10/18.
+  Full-field average places out: 1.7727 -> 1.7727 over ONLY two eligible fields.
+    Silverstone: 0.9091 -> 1.0000; Singapore: 2.6364 -> 2.5455.
+  Latest SQ run's rolling model backtests: 0/4 -> 2/4 first picks. These differ
+    from the six saved-stage outcomes because earlier training availability and
+    the existing backtest eligibility rules differ. No scoring expansion here.
+  Other benchmark totals unchanged: GP Race 15/19 winners, 37/57 top-three,
+    3.3445 places out; GP Q 9/19 poles, 29/57 top-three, 1.9773 places out;
+    Sprint 3/6 winners, 14/18 top-three, 1.2727 places out over one full field.
+
+Verification: 268 authoritative external tests, 264 pass, four FastF1-only skips.
+Full frozen-source commands match the selected SQ study on all six events.
+All other 56 commands (including twelve separate after-FP2 Q checks) match the
+current merged parent. Original Mexico forecasts are retained byte-for-byte;
+separate current-code diagnostic reruns never replace those saved forecasts.
+No new source, raw-quality change, simulation setting or section input is used.
+Tests, data, detailed method/results matrix and dated benchmark backups remain
+outside Git. Six retrospective SQ events, many inspected trials and only two
+complete ranking fields do not establish future accuracy or solve every SQ miss.
+
+
+QUALIFYING POLE CORRECTION
+
+Active for normal GP qualifying once FP3 has loaded, without SQ/Sprint anchors.
+The existing field model supplies scores and uncertainty. A separately fitted
+pole classifier orders only its predicted top five; those same five score values
+are reassigned in that order. No outside driver is promoted. Before FP3, and on
+competitively anchored qualifying stages, the existing model is retained.
+
+The specialist uses 59 inputs: six auxiliary influence scores, per-practice and
+per-compound ranks/gaps/support/missingness, separate earlier Q/SQ driver/team
+mean/peak/count evidence, and a format flag. Earlier history is current-season
+only; last-three-event history fields never include the target weekend. Its
+practice anchor can use one accepted matched sample per compound with four usable
+comparison drivers; the main field model keeps two. The auxiliary practice share
+is .5 times min(1, admitted support/8), with history receiving the remainder.
+Native pole/non-pole training balances original P1 examples and restores each
+weekend's total weight. Missing scores remain unknown. No fuel adjustment,
+weather bonus, driver-specific rule or section telemetry is added.
+
+For a trained specialist: rank its native binary output within the current driver
+field (lower is better), normalize the tied mean ranks to [0,1], then combine
+50% of this rank with 50% pole_influence_anchor. Early-season evidence fallback
+uses pole_influence_anchor directly, with no fitted classifier. Reorder the base
+top five by that score, preserving the original score multiset and base sigma.
+Both native models are portable JSON; no sklearn wrapper is used.
+
+run_info.json records qualifying_front, base_prediction_formula and the final
+prediction_formula. Active runs save pole_model.json and qualifying_front.csv;
+the audit lists base, specialist and final scores plus selected drivers. Those
+files are included in immutable forecast copies and hash checks. Inactive runs
+do not copy stale auxiliary files from a previous latest run.
+
+Rolling backtests evaluate the correction where FP3 is available. The simulation
+spread deliberately retains base-model chronological errors, matching the tested
+score-preserving policy. Shares remain uncalibrated. The historical comparison
+uses 19 saved stages plus 12 separate after-FP2 stages, not 31 independent races:
+poles 9/19 -> 11/19, podium identities 29/57 -> 30/57, error 1.9773 -> 1.9432
+over 16 complete fields. After-FP2: 3/12, 16/36, 2.2455 unchanged. Austria Russell
+and Sepang Verstappen poles improve. Monaco podium matches worsen 2/3 -> 1/3.
+Original Mexico forecasts are retained unchanged; all trial artifacts stay
+outside Git. Commands and dependencies are unchanged.
