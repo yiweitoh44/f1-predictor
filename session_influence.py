@@ -113,6 +113,116 @@ def sprint_qualifying_policy(active=False, trained=False):
         limits='FP1 programmes, fuel and engine settings remain unknown; learned scores and simulation shares are uncalibrated')
 
 
+# Auxiliary GP pole model. Order is fixed to reproduce the validated native
+# model: six explicit scores, per-session inputs, compound inputs, history, flag.
+POLE_BASE_COLUMNS = ['pole_' + c for c in MODEL_COLUMNS]
+POLE_FP_COLUMNS = [f'pole_{code}_{field}' for code in ('FP1', 'FP2', 'FP3')
+                   for field in ('score', 'gap_norm', 'available', 'support', 'peers')]
+POLE_COMPOUND_COLUMNS = [f'pole_{compound}_{field}'
+    for compound in ('soft', 'medium', 'hard', 'intermediate', 'wet')
+    for field in ('score', 'gap_norm', 'available', 'support', 'peers')]
+POLE_HISTORY_COLUMNS = [f'pole_{code}_{field}' for code in ('q', 'sq')
+    for field in ('score', 'team_score', 'peak_score', 'available', 'weekends', 'team_available')]
+POLE_MODEL_COLUMNS = (POLE_BASE_COLUMNS + POLE_FP_COLUMNS + POLE_COMPOUND_COLUMNS
+                      + POLE_HISTORY_COLUMNS + ['sprint_target'])
+POLE_LEARNED_SHARE = .5
+POLE_FRONT_SIZE = 5
+
+
+def qualifying_front_mode(target, inputs):
+    return target == 'Q' and bool(inputs.get('FP3')) and not any(inputs.get(c) for c in ('SQ', 'S'))
+
+
+def qualifying_pole_context(driver, team, target, target_round, history, inputs, row):
+    """Own one-sample evidence is auxiliary; the base model keeps two samples.
+
+    All observations still obey the original raw quality/matching filters. No
+    current qualifying result enters these fields. Missing values stay unknown.
+    """
+    out = {}
+    admitted, practice, support = [], [], 0.
+    for weight, code in enumerate(('FP1', 'FP2', 'FP3'), 1):
+        data = inputs.get(code)
+        records = matched_pace_evidence(driver, data, ('short',), minimum=1) if data else []
+        admitted.extend((r, weight) for r in records)
+        score = weighted_available([(r['score'], 1.) for r in records])
+        practice.append((score, weight))
+        support += sum(r['samples'] for r in records)
+        out.update(_pole_describe([(r, 1.) for r in records], 'pole_' + code))
+    for compound in ('soft', 'medium', 'hard', 'intermediate', 'wet'):
+        out.update(_pole_describe([(r, w) for r, w in admitted if r['compound'] == compound],
+                                  'pole_' + compound))
+    prior = [r for r in history if r['session'] in {'Q', 'SQ'}
+             and int(r['round']) < target_round and np.isfinite(numeric(r.get('position_norm')))]
+    for code, label in (('Q', 'q'), ('SQ', 'sq')):
+        keep = set(sorted({int(r['round']) for r in prior if r['session'] == code})[-3:])
+        records = [r for r in prior if r['session'] == code and int(r['round']) in keep]
+        def form(who, value, peak=False):
+            weekends = {}
+            for r in records:
+                if r.get(who) == value:
+                    weekends.setdefault(int(r['round']), []).append(numeric(r['position_norm']))
+            means = {rnd: float(np.mean(values)) for rnd, values in weekends.items()}
+            return (min(means.values(), default=np.nan) if peak else weighted_available([
+                (v, 2 ** (-(target_round-rnd)/HISTORY_HALF_LIFE)) for rnd, v in means.items()]))
+        driver_form, team_form = form('driver', driver), form('team', team)
+        out.update({f'pole_{label}_score': driver_form, f'pole_{label}_team_score': team_form,
+                    f'pole_{label}_peak_score': form('driver', driver, peak=True),
+                    f'pole_{label}_available': float(np.isfinite(driver_form)),
+                    f'pole_{label}_team_available': float(np.isfinite(team_form)),
+                    f'pole_{label}_weekends': len({int(r['round']) for r in prior
+                        if r['session'] == code and r['driver'] == driver})})
+    out.update({'pole_' + c: row[c] for c in MODEL_COLUMNS})
+    competitive = any(np.isfinite(numeric(row.get(c))) for c in ('sprint_evidence_score', 'SQ_position_norm'))
+    if target == 'Q' and not competitive:
+        value = weighted_available(practice)
+        share = .5 * min(1., support / 8.) if np.isfinite(value) else 0.
+        historical = row['influence_history']
+        out.update({'pole_influence_' + name: value if name == 'practice' and np.isfinite(value)
+                    else historical for name in SOURCE_NAMES})
+        out['pole_influence_anchor'] = ((1-share)*historical
+            + share*(value if np.isfinite(value) else historical))
+    return out
+
+
+def _pole_describe(records, prefix):
+    return {prefix + '_score': weighted_available([(r['score'], w) for r, w in records]),
+            prefix + '_gap_norm': weighted_available([(r['gap_pct']/PACE_MAX_GAP_PCT, w) for r, w in records]),
+            prefix + '_available': float(bool(records)),
+            prefix + '_support': float(sum(r['samples'] for r, _ in records)),
+            prefix + '_peers': weighted_available([(r['peers'], w) for r, w in records]) if records else 0.}
+
+
+def reorder_qualifying_front(scores, specialist, drivers):
+    """Permute the base top five's existing values; keep the score distribution."""
+    scores, specialist, drivers = np.asarray(scores, float), np.asarray(specialist, float), np.asarray(drivers)
+    if not (len(scores) == len(specialist) == len(drivers)) or len(set(drivers)) != len(drivers):
+        raise ValueError('Front correction requires unique, matching driver fields.')
+    if not (np.isfinite(scores).all() and np.isfinite(specialist).all()):
+        raise ValueError('Front correction requires finite component scores.')
+    if np.ptp(specialist) < 1e-9:
+        return scores.copy()
+    base = np.lexsort((drivers, scores))
+    members = base[:min(POLE_FRONT_SIZE, len(base))]
+    ordered = members[np.lexsort((drivers[members], specialist[members]))]
+    result = scores.copy()
+    result[ordered] = np.sort(scores[members])
+    return result
+
+
+def qualifying_front_policy(active=False, trained=False):
+    return dict(active=bool(active), trained=bool(active and trained),
+        scope='GP qualifying after loaded FP3 without SQ/Sprint anchors; other stages retain the base model',
+        front_size=POLE_FRONT_SIZE, outside_candidates=False,
+        score_rule='reorder only the base top five using the pole specialist; retain the same score multiset and base sigma',
+        model_features=list(POLE_MODEL_COLUMNS) if active else [],
+        model_file='pole_model.json' if active else None, audit_file='qualifying_front.csv' if active else None,
+        learned_share=POLE_LEARNED_SHARE if active and trained else 0.,
+        training='strictly earlier current-season Q/SQ; native binary original-P1 target; class balance restored within each unchanged weekend budget',
+        base_minimum_matched_laps=2, specialist_minimum_matched_laps=1, minimum_comparison_drivers=4,
+        limitations='one-lap evidence remains programme-dependent; simulations and classifier scores are uncalibrated')
+
+
 def qualifying_practice_mode(target, inputs):
     """Use separate FP inputs for GP Q's practice-only stage, after practice."""
     return (target == 'Q' and not any(inputs.get(c) for c in ('SQ', 'S'))
@@ -167,7 +277,7 @@ def pace_reason(value):
     return None
 
 
-def matched_pace_evidence(driver, data, labels):
+def matched_pace_evidence(driver, data, labels, *, minimum=2, minimum_drivers=4):
     """Rank usable matched comparisons; a compound needs four usable drivers.
 
     These remain programme-dependent observations. Sparse or extreme gaps
@@ -178,10 +288,10 @@ def matched_pace_evidence(driver, data, labels):
         for compound in ('soft', 'medium', 'hard', 'intermediate', 'wet'):
             key = f'{label}_{compound}_gap_pct'
             peers = [d for d in data.get('drivers', [])
-                     if numeric(d.get(f'{label}_{compound}_matched_laps', d.get(label + '_matched_laps'))) >= 2
+                     if numeric(d.get(f'{label}_{compound}_matched_laps', d.get(label + '_matched_laps'))) >= minimum
                      and pace_reason(d.get(key)) is None]
             me = next((d for d in peers if d['driver'] == driver), None)
-            if me is None or len(peers) < 4:
+            if me is None or len(peers) < minimum_drivers:
                 continue
             gaps = np.array([numeric(d[key]) for d in peers])
             gap = numeric(me[key])
