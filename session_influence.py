@@ -20,6 +20,22 @@ SOURCE_WEIGHTS = {
 MODEL_COLUMNS = ['influence_' + k for k in SOURCE_NAMES] + ['influence_anchor']
 RACE_MODEL_COLUMNS = MODEL_COLUMNS + ['influence_grid_qualifying']
 GRID_QUALIFYING_SHARE = 0.5
+QUALIFYING_PRACTICE_SCORE_COLUMNS = [
+    f'qual_{code}_{field}' for code in ('FP1', 'FP2', 'FP3')
+    for field in ('score', 'gap_norm')]
+QUALIFYING_PRACTICE_CONTEXT_COLUMNS = [
+    f'qual_{code}_{field}' for code in ('FP1', 'FP2', 'FP3')
+    for field in ('available', 'support', 'peers')] + ['sprint_target']
+QUALIFYING_PRACTICE_EXTRA_COLUMNS = (QUALIFYING_PRACTICE_SCORE_COLUMNS
+                                     + QUALIFYING_PRACTICE_CONTEXT_COLUMNS)
+QUALIFYING_PRACTICE_MODEL_COLUMNS = MODEL_COLUMNS + QUALIFYING_PRACTICE_EXTRA_COLUMNS
+QUALIFYING_PRACTICE_MAX_DEPTH = 3
+
+
+def qualifying_practice_mode(target, inputs):
+    """Use separate FP inputs for GP Q's practice-only stage, after practice."""
+    return (target == 'Q' and not any(inputs.get(c) for c in ('SQ', 'S'))
+            and any(inputs.get(c) for c in ('FP1', 'FP2', 'FP3')))
 
 
 def numeric(value):
@@ -101,7 +117,7 @@ def pace_score(driver, data, labels):
 
 
 def qualifying_practice_context(driver, inputs):
-    """Audit existing comparisons; all returned fields are diagnostic only.
+    """Describe existing comparisons, including the selected qualifying inputs.
 
     Missing scores/gaps stay missing. Raw matched counts can be one while the
     eligible flag stays false: production pace still needs two per compound and
@@ -121,6 +137,8 @@ def qualifying_practice_context(driver, inputs):
             used_weight += weight
         out[f'qual_{code}_score'] = weighted_available([(r['score'], 1.) for r in records])
         out[f'qual_{code}_matched_gap_pct'] = weighted_available([(r['gap_pct'], 1.) for r in records])
+        out[f'qual_{code}_gap_norm'] = out[f'qual_{code}_matched_gap_pct'] / PACE_MAX_GAP_PCT
+        out[f'qual_{code}_peers'] = float(np.mean([r['peers'] for r in records])) if records else 0.
         out[f'qual_{code}_available'] = float(bool(records))
         out[f'qual_{code}_support'] = float(sum(r['samples'] for r in records))
         for compound in ('soft', 'medium', 'hard', 'intermediate', 'wet'):
@@ -131,15 +149,22 @@ def qualifying_practice_context(driver, inputs):
     return out
 
 
-def qualifying_diagnostic_policy():
-    return dict(model_inputs=False, minimum_matched_laps_per_compound=2,
+def qualifying_diagnostic_policy(active=False):
+    return dict(model_inputs=bool(active),
+                active_model_columns=list(QUALIFYING_PRACTICE_EXTRA_COLUMNS) if active else [],
+                maximum_tree_depth=QUALIFYING_PRACTICE_MAX_DEPTH if active else None,
+                missing_model_scores='native missing-value handling; no history imputation for per-session scores/gaps',
+                minimum_matched_laps_per_compound=2,
                 minimum_comparison_drivers=4, missing_scores='unknown, not zero or an estimated lap time',
                 matched_laps='per-compound counts; unknown when the session or driver is absent',
                 score='normalized rank within admitted comparisons; lower is better',
                 matched_gap_pct='mean of existing eligible compound comparison gaps, not an estimated qualifying lap',
                 support='matched samples in admitted comparisons; not total laps driven',
+                gap_norm='matched_gap_pct divided by the 5% comparable-gap limit; not a lap-time estimate',
+                peers='mean admitted comparison-field size across compounds, including this driver',
+                constraints='worse speed scores/gaps cannot improve the native prediction; support/missingness context has no forced speed direction',
                 coverage='share of available FP1:FP2:FP3 weights 1:2:3 with an admitted driver score; diagnostic only',
-                limits='Programme/fuel effects remain unobserved. Diagnostic fields do not change scoring or support thresholds.')
+                limits='Programme/fuel effects remain unobserved. Selected fields enter the practice-only GP qualifying model; matching, support thresholds and explicit scoring budgets are unchanged.')
 
 
 def add_influence(row, target):
@@ -184,6 +209,9 @@ def policy():
     return dict(history_weekends=HISTORY_WEEKENDS, history_half_life_rounds=HISTORY_HALF_LIFE,
                 learned_adjustment_share=LEARNED_SHARE, source_weights=SOURCE_WEIGHTS,
                 race_model_columns=RACE_MODEL_COLUMNS,
+                qualifying_practice_model_columns=QUALIFYING_PRACTICE_MODEL_COLUMNS,
+                qualifying_practice_scope='GP qualifying after practice, without completed SQ/Sprint evidence; other stages retain their original model',
+                qualifying_practice_max_depth=QUALIFYING_PRACTICE_MAX_DEPTH,
                 grid_qualifying_share=GRID_QUALIFYING_SHARE,
                 grid_budget='Race/Sprint split the existing grid budget equally between starting grid and Q/SQ position when both are available; otherwise retain the existing anchor',
                 grid_weight_diagnostics='influence_weight_grid is the combined budget; influence_weight_starting_grid and influence_weight_grid_qualifying are its applied components',
