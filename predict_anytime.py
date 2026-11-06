@@ -189,7 +189,7 @@ def read_tracks(path):
 PACE_COMPOUNDS = ("SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET")
 
 
-def tyre_pace_summary(laps, code):
+def tyre_pace_summary(laps, code, *, short_max_age=5):
     """Matched-tyre gaps and net stint trends, not fuel correction."""
     required = {"Driver", "Compound", "TyreLife", "FreshTyre",
                 "LapNumber", "Stint", "LapStartTime", "lap_seconds"}
@@ -265,7 +265,7 @@ def tyre_pace_summary(laps, code):
             )
 
     if code.startswith("FP"):
-        compare(data[data.TyreLife <= 5], "short", "min", 1)
+        compare(data if short_max_age is None else data[data.TyreLife <= short_max_age], "short", "min", 1)
 
     if not (code.startswith("FP") or code in {"S", "R"}):
         return output
@@ -306,6 +306,18 @@ def tyre_pace_summary(laps, code):
         ] = float(np.median(slopes))
 
     return output
+
+
+def sprint_qualifying_pace_summary(laps, code):
+    """Keep the ordinary summary; add all-age FP1 comparisons only for SQ runs."""
+    baseline = tyre_pace_summary(laps, code)
+    if code != 'FP1':
+        return baseline
+    expanded = tyre_pace_summary(laps, code, short_max_age=None)
+    for driver, values in expanded.items():
+        baseline.setdefault(driver, {}).update({
+            'sq_' + key: value for key, value in values.items() if key.startswith('short_')})
+    return baseline
 
 
 def race_session_context(results, raw_laps):
@@ -409,7 +421,7 @@ def circuit_similarity(a, b):
     return float(np.exp(-4 * distance))
 
 
-def features(driver, target_code, event, history, inputs, tracks):
+def features(driver, target_code, event, history, inputs, tracks, *, sprint_qualifying=False):
     code, team = driver["driver"], driver["team"]
     row = {"sprint_target": float(target_code in {"SQ", "S"}),
            "round": float(event["RoundNumber"])}
@@ -514,6 +526,11 @@ def features(driver, target_code, event, history, inputs, tracks):
             position = np.nan
         row["sprint_evidence_score"] = influence.weighted_available([
             (position, .8), (influence.pace_score(code, sprint, ('long',)), .2)])
+    if sprint_qualifying:
+        context = influence.sprint_qualifying_context(code, team, int(event['RoundNumber']), history, inputs)
+        row.update(context)
+        if target_code == 'SQ':
+            row['practice_evidence_score'] = context['sq_fp1_score']
     row.update(influence.add_influence(row, target_code))
     return row
 
@@ -525,7 +542,7 @@ def add_history(history, data, rnd, location):
                 history.append({**driver, "round": rnd, "location": location, "session": data["code"]})
 
 
-def training_rows(events, all_data, family, mask, tracks):
+def training_rows(events, all_data, family, mask, tracks, *, sprint_qualifying=False):
     history, rows = [], []
     for event in events:
         rnd = int(event["RoundNumber"])
@@ -541,7 +558,7 @@ def training_rows(events, all_data, family, mask, tracks):
                 y = number(driver.get("position_norm"))
                 if not np.isfinite(y):
                     continue
-                row = features(driver, code, event, history, inputs, tracks)
+                row = features(driver, code, event, history, inputs, tracks, sprint_qualifying=sprint_qualifying)
                 # Actual historical grids are pre-race information, but use them
                 # only at a stage where the corresponding qualifying is available.
                 grid = number(driver.get("grid"))
@@ -563,12 +580,19 @@ def training_rows(events, all_data, family, mask, tracks):
 
 def fit(frame, columns):
     import xgboost as xgb
-    learned_share = influence.LEARNED_SHARE
+    sq_model = columns == influence.SPRINT_QUALIFYING_MODEL_COLUMNS
+    learned_share = influence.SPRINT_QUALIFYING_LEARNED_SHARE if sq_model else influence.LEARNED_SHARE
 
     weights = 2. ** (-(frame.event_round.max() - frame.event_round.to_numpy()) / 6.)
     # A Sprint weekend must not get twice the total training weight.
     weekend_counts = frame.groupby("event_round").label.transform("size").to_numpy()
     weights = weights / weekend_counts * np.median(weekend_counts)
+
+    if sq_model:
+        original = weights.copy()
+        weights *= np.where(frame.target_session.to_numpy() == "SQ", influence.SPRINT_QUALIFYING_TRAINING_RATIO, 1.)
+        for _, indices in frame.groupby("event_round", sort=False).indices.items():
+            weights[indices] *= original[indices].sum() / weights[indices].sum()
 
     training = xgb.DMatrix(
         frame[columns].to_numpy(dtype=np.float32),
@@ -579,10 +603,14 @@ def fit(frame, columns):
 
     practice_model = columns == influence.QUALIFYING_PRACTICE_MODEL_COLUMNS
     context_columns = set(influence.QUALIFYING_PRACTICE_CONTEXT_COLUMNS) if practice_model else set()
+    if sq_model:
+        context_columns = {c for c in columns if c not in influence.MODEL_COLUMNS
+                           and not c.endswith(('_score', '_gap'))}
     booster = xgb.train(
         {
             "objective": "reg:squarederror",
-            "max_depth": influence.QUALIFYING_PRACTICE_MAX_DEPTH if practice_model else 2,
+            "max_depth": (influence.SPRINT_QUALIFYING_MAX_DEPTH if sq_model else
+                          influence.QUALIFYING_PRACTICE_MAX_DEPTH if practice_model else 2),
             "monotone_constraints": tuple(0 if c in context_columns else 1 for c in columns),
             "eta": 0.04,
             "subsample": 0.85,
@@ -674,11 +702,12 @@ def comparison_summary(records, target):
     return sorted(common), rows
 
 
-def train_and_check(frame, target_code, comparison_rows=None, qualifying_practice=False):
-    # Keep the legacy columns for Race/Sprint, SQ and competitively anchored Q.
+def train_and_check(frame, target_code, comparison_rows=None, qualifying_practice=False, sprint_qualifying=False):
+    # Keep the legacy columns for Race/Sprint and competitively anchored Q.
     # Practice-only GP Q additionally uses admitted per-session evidence/support.
     # Weather, raw lap times and section fields remain excluded from every fit.
     columns = list(influence.RACE_MODEL_COLUMNS if target_code in RACE_TYPES else
+                   influence.SPRINT_QUALIFYING_MODEL_COLUMNS if target_code == 'SQ' and sprint_qualifying else
                    influence.QUALIFYING_PRACTICE_MODEL_COLUMNS if target_code == 'Q' and qualifying_practice
                    else influence.MODEL_COLUMNS)
     rounds = sorted(frame.event_round.unique())
@@ -922,6 +951,8 @@ def run(args):
     tracks = read_tracks(args.tracks)
     store = Store(args.year, now, args.refresh, args.offline,
                   getattr(args, "rebuild_summaries", False))
+    if target == 'SQ':
+        store.pace_function = sprint_qualifying_pace_summary
     store.client.provenance.update(schedule_client.provenance)
     print(f"Target: {args.year} {event['EventName']} / {args.session}. Cutoff: {now.isoformat()}")
     current = {}
@@ -976,7 +1007,9 @@ def run(args):
     if not usable_events and int(event['RoundNumber']) > 4:
         raise ValueError("No earlier season data could be loaded.")
     family = RACE_TYPES if target in RACE_TYPES else {"Q", "SQ"}
-    frame, history = training_rows(usable_events, all_data, family, set(current), tracks)
+    sq_model = influence.sprint_qualifying_mode(target, current)
+    frame, history = training_rows(usable_events, all_data, family, set(current), tracks,
+                                   sprint_qualifying=sq_model)
     if frame.empty and int(event['RoundNumber']) > 4:
         raise ValueError("No valid historical labels available for this prediction type.")
     if frame.empty:
@@ -1003,7 +1036,7 @@ def run(args):
     if practice_only:
         print("Practice-only drivers outside the assumed entry list: " + ", ".join(practice_only)
               + ". Use --roster for confirmed replacements.")
-    inputs = pd.DataFrame([features(d, target, event, history, current, tracks) for d in drivers])
+    inputs = pd.DataFrame([features(d, target, event, history, current, tracks, sprint_qualifying=sq_model) for d in drivers])
     grid_record = None
     grid_warnings = []
     grid_mode = getattr(args, 'grid_source', 'auto')
@@ -1075,7 +1108,13 @@ def run(args):
         model, columns, sigma, tests = early_season_model(inputs)
     else:
         model, columns, sigma, tests = train_and_check(
-            frame, target, comparison_rows=comparisons, qualifying_practice=practice_model)
+            frame, target, comparison_rows=comparisons, qualifying_practice=practice_model,
+            sprint_qualifying=sq_model)
+    if sq_model:
+        print('Sprint qualifying: FP1 compound comparisons and earlier SQ history; '
+              + ('early evidence fallback.' if early else 'dedicated learned score.'))
+        print(f"  FP1 SQ comparisons admitted for {int(inputs.sq_fp1_available.sum())}/{len(inputs)} drivers; "
+              'all validated tyre ages, matched within age/time bands.')
     scores = model.predict(inputs[columns])
     win, top3, average, positions = simulate(scores, sigma, args.simulations, return_positions=True)
     output, simulation_details = prediction_tables(drivers, scores, win, top3, average, positions, target)
@@ -1106,7 +1145,8 @@ def run(args):
     pd.DataFrame(tests, columns=['round','session','pick','actual','correct','mean_rank_error','top3_hits']).to_csv(folder / "backtest.csv", index=False)
     pd.DataFrame(comparisons, columns=['round','session','method','eligible','reason','drivers','pick','actual','correct','mean_rank_error','top3_hits']).to_csv(folder / 'backtest_comparisons.csv', index=False)
     model.save_model(folder / "model.json")
-    (folder / "influence_policy.json").write_text(json.dumps(influence.policy(), indent=2), encoding="utf-8")
+    active_policy = influence.policy(sprint_qualifying=sq_model, trained=not early)
+    (folder / "influence_policy.json").write_text(json.dumps(active_policy, indent=2), encoding="utf-8")
     inputs[[c for c in inputs if c.startswith('influence_')]].assign(driver=names).to_csv(
         folder / "session_influence.csv", index=False)
     pace_rejections = []
@@ -1201,8 +1241,11 @@ def run(args):
                 "model_features": columns,
                 "qualifying_practice_diagnostics": influence.qualifying_diagnostic_policy(
                     active=columns == influence.QUALIFYING_PRACTICE_MODEL_COLUMNS) if target in {"Q", "SQ"} else None,
+                "sprint_qualifying_policy": influence.sprint_qualifying_policy(active=sq_model, trained=not early),
+                "active_learned_share": (0. if early else influence.SPRINT_QUALIFYING_LEARNED_SHARE
+                                         if sq_model else influence.LEARNED_SHARE),
                 "section_pace_model_inputs": False,
-                "session_influence": influence.policy(),
+                "session_influence": active_policy,
                 "prediction_formula": 'influence_anchor (no ML fit)' if early else "(1-learned_share)*influence_anchor + learned_share*clip(native_model_prediction,0,1)",
                 "circuit_category_weights": GROUP_WEIGHTS,
                 "circuit_category_method": "weighted tag overlap; one result average per weekend; minimum two matching weekends; recency 0.85 per round",

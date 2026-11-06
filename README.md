@@ -72,8 +72,9 @@ GP qualifying after practice, without completed SQ/Sprint evidence, now gives
 native XGBoost separate FP1/FP2/FP3 pace scores, matched gaps and support/context.
 Missing session scores remain unknown; they are not replaced with historical
 form. The explicit history/practice budgets and 85% evidence / 15% learned blend
-are retained. Race, Sprint, SQ and competitively anchored GP qualifying keep
-their existing models. Section telemetry stays disabled.
+are retained. Race, Sprint and competitively anchored GP qualifying keep
+their existing models. SQ has the separate treatment below. Section telemetry
+stays disabled.
 
 Q/SQ rows export the practice fields in `prediction_inputs.csv` and `training.csv`.
 `run_info.json` identifies the actual model columns and which extra fields are
@@ -84,9 +85,30 @@ including controls and failed cases. The selected input treatment retained
 9/19 GP pole picks, improved top-three matches from 28/57 to 29/57 and reduced
 ranking error from 2.000 to 1.977 over 16 complete fields. These are inspected
 historical cases, including the original Mexico forecast stage, not unseen
-future validation. Race/Sprint/SQ results are unchanged. Alternative lap-matching
+future validation. That review left Race/Sprint/SQ results unchanged. Alternative lap-matching
 methods were tested and the current matching was retained. See START_HERE for
 method coverage, stage-specific results and limits.
+
+## Sprint qualifying
+
+After FP1, SQ now uses a dedicated native model with separate compound pace,
+comparison support and earlier SQ form. It compares all validated tyre ages
+within the existing compound, freshness-proxy, age and time bands; it still
+requires two matched laps per compound and four usable comparison drivers.
+No fuel or engine correction is assumed. Other requested formats are unchanged.
+
+With sufficient earlier-season history, SQ uses the learned score directly,
+rather than blending a small adjustment into the history-heavy anchor. This is
+not 100% practice: history remains an input. Early-season SQ retains the labelled
+evidence-only fallback. `run_info.json` records the actual policy and columns;
+`prediction_inputs.csv` contains the `sq_*` evidence. Commands are unchanged.
+
+The review covered 1,132 trial settings including controls, or 6,792 forecast
+attempts across the same six SQ weekends. Pole picks improved from 1/6 to 3/6,
+top-three matches from 9/18 to 10/18; ranking error stayed at 1.773 over only two
+complete fields. The pole gain held across five fixed simulation seeds. These
+are extensively inspected historical cases, not an estimate of future accuracy.
+See START_HERE for method coverage, individual picks and limits.
 
 ## Early season and saved forecasts
 
