@@ -641,3 +641,46 @@ No new source, raw-quality change, simulation setting or section input is used.
 Tests, data, detailed method/results matrix and dated benchmark backups remain
 outside Git. Six retrospective SQ events, many inspected trials and only two
 complete ranking fields do not establish future accuracy or solve every SQ miss.
+
+
+QUALIFYING POLE CORRECTION
+
+Active for normal GP qualifying once FP3 has loaded, without SQ/Sprint anchors.
+The existing field model supplies scores and uncertainty. A separately fitted
+pole classifier orders only its predicted top five; those same five score values
+are reassigned in that order. No outside driver is promoted. Before FP3, and on
+competitively anchored qualifying stages, the existing model is retained.
+
+The specialist uses 59 inputs: six auxiliary influence scores, per-practice and
+per-compound ranks/gaps/support/missingness, separate earlier Q/SQ driver/team
+mean/peak/count evidence, and a format flag. Earlier history is current-season
+only; last-three-event history fields never include the target weekend. Its
+practice anchor can use one accepted matched sample per compound with four usable
+comparison drivers; the main field model keeps two. The auxiliary practice share
+is .5 times min(1, admitted support/8), with history receiving the remainder.
+Native pole/non-pole training balances original P1 examples and restores each
+weekend's total weight. Missing scores remain unknown. No fuel adjustment,
+weather bonus, driver-specific rule or section telemetry is added.
+
+For a trained specialist: rank its native binary output within the current driver
+field (lower is better), normalize the tied mean ranks to [0,1], then combine
+50% of this rank with 50% pole_influence_anchor. Early-season evidence fallback
+uses pole_influence_anchor directly, with no fitted classifier. Reorder the base
+top five by that score, preserving the original score multiset and base sigma.
+Both native models are portable JSON; no sklearn wrapper is used.
+
+run_info.json records qualifying_front, base_prediction_formula and the final
+prediction_formula. Active runs save pole_model.json and qualifying_front.csv;
+the audit lists base, specialist and final scores plus selected drivers. Those
+files are included in immutable forecast copies and hash checks. Inactive runs
+do not copy stale auxiliary files from a previous latest run.
+
+Rolling backtests evaluate the correction where FP3 is available. The simulation
+spread deliberately retains base-model chronological errors, matching the tested
+score-preserving policy. Shares remain uncalibrated. The historical comparison
+uses 19 saved stages plus 12 separate after-FP2 stages, not 31 independent races:
+poles 9/19 -> 11/19, podium identities 29/57 -> 30/57, error 1.9773 -> 1.9432
+over 16 complete fields. After-FP2: 3/12, 16/36, 2.2455 unchanged. Austria Russell
+and Sepang Verstappen poles improve. Monaco podium matches worsen 2/3 -> 1/3.
+Original Mexico forecasts are retained unchanged; all trial artifacts stay
+outside Git. Commands and dependencies are unchanged.

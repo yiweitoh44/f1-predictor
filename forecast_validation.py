@@ -42,7 +42,9 @@ def freeze(latest, code_root):
     pending = Path(tempfile.mkdtemp(prefix='.pending-', dir=parent))
     destination = parent / (created.strftime('%Y%m%dT%H%M%S%fZ') + '_' + pending.name[-8:])
     try:
-        for name in FILES:
+        info = json.loads((latest / 'run_info.json').read_text(encoding='utf-8'))
+        files = FILES + (('pole_model.json', 'qualifying_front.csv') if info.get('qualifying_front', {}).get('active') else ())
+        for name in files:
             shutil.copyfile(latest / name, pending / name)
         versions = {'python': platform.python_version()}
         for package in ('numpy', 'pandas', 'xgboost'):
@@ -54,7 +56,7 @@ def freeze(latest, code_root):
                 'session_influence.py', 'grid_sources.py', 'circuit_sections.py',
                 'tracks.csv', 'requirements.txt')
         manifest = dict(schema=1, created_utc=created.isoformat(),
-                        files={name: digest(pending / name) for name in FILES},
+                        files={name: digest(pending / name) for name in files},
                         code_sha256={name: digest(code_root / name) for name in code},
                         runtime_versions=versions)
         (pending / 'forecast_manifest.json').write_text(

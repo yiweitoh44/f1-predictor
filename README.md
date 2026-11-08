@@ -120,3 +120,21 @@ Each run also saves a forecast copy outside `latest`, with inputs, source/code
 hashes and runtime versions. After the session, score it against a published-results
 CSV using `python predict_anytime.py --score-forecast "<saved folder>" --actual-results "results.csv"`.
 See START_HERE.txt for CSV columns, coverage checks and validation limits.
+
+## Qualifying pole correction
+
+After FP3, normal-weekend qualifying uses a separate pole model to reorder the
+main model's predicted top five. Other score values and the simulation spread
+are retained. Before FP3 and after SQ/Sprint, the existing policy stays active.
+
+The same 19-event comparison improves poles **9/19 → 11/19**, top-three matches
+**29/57 → 30/57**, and average ranking error **1.977 → 1.943** over 16 complete
+fields. The two-pole gain held across five fixed simulation seeds. Monaco's
+podium prediction worsened; these historical results do not establish future
+accuracy. The separate after-FP2 comparison is unchanged.
+
+The auxiliary model can consider one accepted matched lap per compound with four
+usable comparison drivers. The main model keeps its two-lap rule and all raw
+quality checks remain. Both components use native XGBoost. Saved forecasts include
+`pole_model.json` and `qualifying_front.csv` when this correction is active.
+See START_HERE for the policy and saved-model formula.
