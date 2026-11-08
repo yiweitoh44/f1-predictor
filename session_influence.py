@@ -48,6 +48,116 @@ SPRINT_QUALIFYING_LEARNED_SHARE = 1.0
 SPRINT_QUALIFYING_TRAINING_RATIO = 4.0
 SPRINT_QUALIFYING_MAX_DEPTH = 3
 
+# The Sprint specialist only assigns the existing front-eight score values.
+# It does not change the base race model, score spread or raw lap admission.
+SPRINT_BASE_COLUMNS = ['sp_' + c for c in RACE_MODEL_COLUMNS]
+SPRINT_HISTORY_COLUMNS = [f'sp_{code}_{field}' for code in ('s', 'r')
+    for field in ('score', 'team_score', 'peak_score', 'available', 'weekends')]
+SPRINT_PACE_COLUMNS = [f'sp_{label}_{field}' for label in ('short', 'long')
+    for field in ('score', 'gap', 'available', 'support', 'peers')]
+SPRINT_CONTEXT_COLUMNS = ['sprint_target', 'sp_grid_delta', 'sp_qual_score',
+                          'sp_qual_gap', 'sp_qual_available', 'sp_trend']
+SPRINT_MODEL_COLUMNS = (SPRINT_BASE_COLUMNS + SPRINT_HISTORY_COLUMNS
+                       + SPRINT_PACE_COLUMNS + SPRINT_CONTEXT_COLUMNS)
+SPRINT_FRONT_SIZE = 8
+SPRINT_LEARNED_SHARE = .5
+
+
+def sprint_specialist_mode(target, inputs):
+    return target == 'S' and bool(inputs.get('FP1')) and bool(inputs.get('SQ'))
+
+
+def _sprint_form(history, target_round, code, who, value, window=3, peak=False):
+    prior = [r for r in history if r['session'] == code
+             and int(r['round']) < target_round
+             and np.isfinite(numeric(r.get('position_norm')))]
+    keep = set(sorted({int(r['round']) for r in prior})[-window:])
+    weekends = {}
+    for record in prior:
+        if record.get(who) == value and int(record['round']) in keep:
+            weekends.setdefault(int(record['round']), []).append(numeric(record['position_norm']))
+    means = {rnd: float(np.mean(values)) for rnd, values in weekends.items()}
+    if peak:
+        return min(means.values(), default=np.nan)
+    return weighted_available([(v, 2 ** (-(target_round-rnd)/HISTORY_HALF_LIFE))
+                               for rnd, v in means.items()])
+
+
+def sprint_specialist_context(driver, team, target_round, history, inputs):
+    """Separate earlier Sprint/GP form and existing FP1 comparisons, not telemetry."""
+    out = {}
+    for code in ('S', 'R'):
+        prefix = 'sp_' + code.lower()
+        value = _sprint_form(history, target_round, code, 'driver', driver)
+        out.update({prefix + '_score': value,
+            prefix + '_team_score': _sprint_form(history, target_round, code, 'team', team),
+            prefix + '_peak_score': _sprint_form(history, target_round, code, 'driver', driver, peak=True),
+            prefix + '_available': float(np.isfinite(value)),
+            prefix + '_weekends': len({int(r['round']) for r in history
+                if r['session'] == code and int(r['round']) < target_round
+                and r['driver'] == driver and np.isfinite(numeric(r.get('position_norm')))})})
+    out['sp_s_recent2_score'] = _sprint_form(history, target_round, 'S', 'driver', driver, window=2)
+    data = inputs.get('FP1') or {}
+    for label in ('short', 'long'):
+        records = matched_pace_evidence(driver, data, (label,))
+        prefix = 'sp_' + label
+        out.update({prefix + '_score': weighted_available([(r['score'], 1.) for r in records]),
+            prefix + '_gap': weighted_available([(r['gap_pct']/PACE_MAX_GAP_PCT, 1.) for r in records]),
+            prefix + '_available': float(bool(records)),
+            prefix + '_support': float(sum(r['samples'] for r in records)),
+            prefix + '_peers': float(np.mean([r['peers'] for r in records])) if records else 0.})
+    participant = next((d for d in data.get('drivers', []) if d['driver'] == driver), {})
+    out['sp_trend'] = numeric(participant.get('long_trend_pct_per_lap'))
+    return out
+
+
+def sprint_specialist_inputs(row, target):
+    """Recompute after grid application; base influence columns are untouched."""
+    values = {c: numeric(row.get(c)) for c in RACE_MODEL_COLUMNS}
+    if target == 'S':
+        history = numeric(row.get('sp_s_recent2_score'))
+        if not np.isfinite(history):
+            history = values['influence_history']
+        sources = dict(history=history, grid=numeric(row.get('start_grid_norm')),
+            qualifying=numeric(row.get('qualifying_grid_norm')),
+            practice=numeric(row.get('practice_evidence_score')))
+        values['influence_anchor'] = weighted_available([
+            (sources['history'], .20), (sources['grid'], .375),
+            (sources['qualifying'], .375), (sources['practice'], .05)])
+        for name in SOURCE_NAMES:
+            value = sources.get(name, np.nan)
+            values['influence_' + name] = value if np.isfinite(value) else history
+        qualifying = sources['qualifying']
+        values['influence_grid_qualifying'] = qualifying if np.isfinite(qualifying) else history
+    q = 'SQ' if target == 'S' else 'Q'
+    qualifying = numeric(row.get(q + '_position_norm'))
+    return {'sp_' + c: values[c] for c in RACE_MODEL_COLUMNS} | {
+        'sp_grid_delta': numeric(row.get('start_grid_norm')) - numeric(row.get('qualifying_grid_norm')),
+        'sp_qual_score': qualifying, 'sp_qual_gap': numeric(row.get(q + '_gap_pct'))/PACE_MAX_GAP_PCT,
+        'sp_qual_available': float(np.isfinite(qualifying))}
+
+
+def reorder_sprint_front(scores, specialist, drivers):
+    return _reorder_front(scores, specialist, drivers, SPRINT_FRONT_SIZE)
+
+
+def sprint_specialist_policy(active=False, trained=False):
+    return dict(active=bool(active), trained=bool(active and trained),
+        scope='Sprint after loaded FP1 and SQ; other session modes and stages retain the base model',
+        front_size=SPRINT_FRONT_SIZE, outside_candidates=False,
+        score_rule='specialist reorders only the base top eight; same score multiset and base sigma',
+        model_features=list(SPRINT_MODEL_COLUMNS) if active else [],
+        learned_share=SPRINT_LEARNED_SHARE if active and trained else 0.,
+        history='auxiliary Sprint anchor uses driver mean over the last two earlier Sprint weekends, decayed by calendar rounds; falls back to the original GP/Sprint history when unavailable',
+        separate_history='driver/team mean and driver best from last three earlier Sprint and GP weekends; no current-weekend history',
+        practice='existing FP1 short/long comparisons; minimum two matched laps per compound and four comparison drivers; unknown remains missing',
+        training='pooled earlier GP/Sprint regression, depth three, original per-weekend totals and six-round training half-life',
+        early_fallback='no learned model before four usable earlier weekends; auxiliary evidence anchor may reorder the base top eight',
+        auxiliary_anchor='20% history, 37.5% starting grid, 37.5% SQ position, 5% admitted FP1 pace; redistribute absent evidence',
+        model_file='sprint_model.json' if active else None,
+        audit_file='sprint_front.csv' if active else None,
+        limits='six inspected historical Sprint tests and one complete ranking; fuel, traffic, strategy and incident causes remain unmodelled; simulation shares are uncalibrated')
+
 
 def sprint_qualifying_mode(target, inputs):
     return target == 'SQ' and bool(inputs.get('FP1'))
@@ -195,6 +305,10 @@ def _pole_describe(records, prefix):
 
 def reorder_qualifying_front(scores, specialist, drivers):
     """Permute the base top five's existing values; keep the score distribution."""
+    return _reorder_front(scores, specialist, drivers, POLE_FRONT_SIZE)
+
+
+def _reorder_front(scores, specialist, drivers, size):
     scores, specialist, drivers = np.asarray(scores, float), np.asarray(specialist, float), np.asarray(drivers)
     if not (len(scores) == len(specialist) == len(drivers)) or len(set(drivers)) != len(drivers):
         raise ValueError('Front correction requires unique, matching driver fields.')
@@ -203,7 +317,7 @@ def reorder_qualifying_front(scores, specialist, drivers):
     if np.ptp(specialist) < 1e-9:
         return scores.copy()
     base = np.lexsort((drivers, scores))
-    members = base[:min(POLE_FRONT_SIZE, len(base))]
+    members = base[:min(size, len(base))]
     ordered = members[np.lexsort((drivers[members], specialist[members]))]
     result = scores.copy()
     result[ordered] = np.sort(scores[members])

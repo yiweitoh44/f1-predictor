@@ -138,3 +138,23 @@ usable comparison drivers. The main model keeps its two-lap rule and all raw
 quality checks remain. Both components use native XGBoost. Saved forecasts include
 `pole_model.json` and `qualifying_front.csv` when this correction is active.
 See START_HERE for the policy and saved-model formula.
+
+## Sprint winner correction
+
+After FP1 and SQ have loaded, a separate Sprint model reorders the main model's
+predicted top eight, keeping the same score values and simulation spread. It uses
+earlier Sprint/GP form, SQ performance, the starting grid and existing FP1 pace
+comparisons. Early-season runs use an evidence-only version. Before FP1/SQ, the
+existing policy remains active.
+
+The same six-event historical comparison improves winner picks **3/6 → 5/6**,
+retains **14/18** podium-driver matches and reduces ranking error **1.273 → 1.091**
+on the only complete Sprint field available. Miami and Silverstone winner picks
+improve; Zandvoort remains wrong. The winner gain holds across five fixed
+simulation seeds. Six inspected events and one complete ranking are limited
+retrospective evidence, not a future success-rate estimate.
+
+Active saved forecasts include `sprint_model.json` and `sprint_front.csv`.
+GP race, qualifying and SQ predictions retain their existing models. Commands,
+dependencies, lap-quality checks and the two-lap comparison rule are unchanged.
+See START_HERE for the auxiliary model and validation details.

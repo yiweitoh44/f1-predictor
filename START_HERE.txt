@@ -684,3 +684,79 @@ over 16 complete fields. After-FP2: 3/12, 16/36, 2.2455 unchanged. Austria Russe
 and Sepang Verstappen poles improve. Monaco podium matches worsen 2/3 -> 1/3.
 Original Mexico forecasts are retained unchanged; all trial artifacts stay
 outside Git. Commands and dependencies are unchanged.
+
+
+SPRINT WINNER CORRECTION
+
+Active only for Sprint with both FP1 and SQ loaded. A separate native regression
+model orders the existing base top eight; it cannot promote an outside driver.
+Those same eight score values are reassigned in the specialist's order. Remaining
+drivers' scores, the base score distribution and base simulation spread are retained.
+Other requested session modes and earlier availability stages retain their models.
+
+The 33 auxiliary inputs keep seven explicit influence scores separate from:
+  - Driver/team mean, driver best, availability and event count over the last
+    three earlier Sprint weekends, and separately over three earlier GP races.
+  - Existing FP1 short/long pace ranks, gaps, comparison counts and missingness.
+  - Starting-grid versus qualifying-position difference, SQ position, observed
+    qualifying gap when supplied, qualifying availability, observed FP1 long-run
+    trend and a format flag. Unknown timing is not estimated or filled with zero.
+
+The auxiliary anchor retains the 20% history / 75% grid-performance / 5% practice
+budget, splitting grid-performance equally between starting grid and SQ position.
+It uses driver form over the last TWO earlier Sprint events (not two calendar
+rounds), decayed with a three-calendar-round half-life. With no such driver form,
+it retains the original GP/Sprint historical blend. Missing sources redistribute
+their budget. This changes only the auxiliary anchor, not the base field model.
+
+With four usable earlier weekends, its score is 50% sp_influence_anchor plus
+50% clipped native prediction. Native regression uses depth three, the existing
+six-round training half-life and original per-weekend training totals. GP/Sprint
+training is pooled with a format flag. Current-weekend history never enters;
+current SQ enters only as already-completed pre-Sprint evidence. During the
+first-four-round evidence fallback no native model is fitted: the auxiliary
+anchor alone orders the base top eight. Lap admission still requires two matched
+samples per compound and four comparison drivers. No raw lap-quality, fuel,
+traffic, strategy, retirement-cause or section-telemetry change is introduced.
+
+run_info.json and influence_policy.json record sprint_specialist, its actual
+columns, training status, blend and limits. Active runs save sprint_model.json
+and sprint_front.csv; early evidence files explicitly record trained=false.
+The audit lists driver, base/specialist/final scores and selected membership.
+Immutable forecast copies include both files and their hashes. Inactive runs
+ignore stale specialist files left in latest. Base model.json remains separate.
+Rolling Sprint backtests apply the correction only with admitted FP1/SQ, using
+strictly earlier training; sigma retains the base-model errors. The base learned
+share in run_info.json remains 15%; the separate specialist blend is recorded
+under sprint_specialist. Simulation shares remain uncalibrated.
+
+Historical comparison on identical six saved Sprint stages/data/eligibility:
+  Winners 3/6 -> 5/6; podium-driver matches 14/18 -> 14/18.
+  Average places out 1.2727 -> 1.0909 on ONLY ONE complete field (Silverstone).
+  Shanghai: Russell -> Russell; actual Russell.
+  Miami: Antonelli -> Norris; actual Norris.
+  Montreal: Russell -> Russell; actual Russell.
+  Silverstone: Hamilton -> Antonelli; actual Antonelli.
+  Zandvoort: Norris -> Norris; actual Russell (still incorrect).
+  Singapore: Verstappen -> Verstappen; actual Verstappen.
+  GP race 15/19, GP qualifying 11/19, SQ 3/6 remain unchanged.
+
+The review covered 352 source/history/native-model settings plus 364 front/blend
+settings, 4,296 case-setting attempts on six events, including one no-evidence
+failure retained in the comparison. These are repeated method
+trials, not independent races. Discovery used rounds 2/4/5/9; later checks 12/17
+could not rescue a discovery failure. Fourteen inventoried practical method
+families have recorded outcomes outside Git. Five fixed simulation seeds retain
+two extra winner picks at every seed: baseline 4/3/3/3/4 versus selected 6/5/5/5/6
+for seeds 0/7/42/101/2026. The reported canonical run uses the unchanged seed 42;
+we do not select a favourable seed. Raw score leaders gain two correct winners.
+The direct specialist lost the seed-0 later winner and was rejected; score-
+preserving front correction avoids that regression. These inspected historical
+results are not an untouched holdout or an estimate of future accuracy.
+
+Verification: 293 authoritative external tests, 289 pass/four FastF1-only skips.
+All 62 frozen-source command replays pass. Six Sprint commands reproduce every
+selected score and auxiliary training/input field; the other 56 retain their
+prediction/simulation/backtest tables. Original source URL/hash sets, cutoffs,
+field eligibility, original Mexico forecasts and old dated backups are retained.
+No new dependency or source is added; detailed trials/tests/data stay outside Git.
