@@ -62,6 +62,114 @@ SPRINT_MODEL_COLUMNS = (SPRINT_BASE_COLUMNS + SPRINT_HISTORY_COLUMNS
 SPRINT_FRONT_SIZE = 8
 SPRINT_LEARNED_SHARE = .5
 
+# GP race correction combines a small score model and a long-run model. Both
+# supply ordering evidence only: the existing field score values are retained.
+RACE_SPECIALIST_BASE_COLUMNS = ['gp_' + c for c in RACE_MODEL_COLUMNS]
+RACE_SPECIALIST_SPRINT_COLUMNS = ['S_position_norm', 'S_finished',
+    'S_laps_completed_fraction', 'S_neutralized_lap_fraction', 'S_finish_gap_pct',
+    'S_grid_gain_norm', 'sprint_evidence_score']
+RACE_SPECIALIST_HISTORY_COLUMNS = [f'gp_{code}_{field}' for code in ('r', 's')
+    for field in ('score', 'team_score', 'peak_score', 'available', 'weekends')]
+RACE_SPECIALIST_PACE_COLUMNS = [f'gp_FP1_long_{field}'
+    for field in ('score', 'gap', 'available', 'support', 'peers')]
+RACE_SPECIALIST_CONTEXT_COLUMNS = ['sprint_target', 'gp_grid_delta',
+    'gp_qual_score', 'gp_qual_gap', 'gp_qual_available', 'gp_FP1_trend']
+RACE_SCORE_MODEL_COLUMNS = RACE_SPECIALIST_BASE_COLUMNS + RACE_SPECIALIST_SPRINT_COLUMNS
+RACE_LONG_MODEL_COLUMNS = (RACE_SPECIALIST_BASE_COLUMNS + RACE_SPECIALIST_HISTORY_COLUMNS
+    + RACE_SPECIALIST_PACE_COLUMNS + RACE_SPECIALIST_CONTEXT_COLUMNS
+    + RACE_SPECIALIST_SPRINT_COLUMNS)
+RACE_FRONT_SIZE = 3
+RACE_SCORE_LEARNED_SHARE = .15
+RACE_LONG_LEARNED_SHARE = 1.
+
+
+def race_specialist_mode(target, inputs):
+    return (target == 'R' and bool(inputs.get('FP1')) and bool(inputs.get('S'))
+            and bool(inputs.get('Q')))
+
+
+def race_specialist_context(driver, team, target_round, history, inputs):
+    """Only earlier GP/Sprint history and already admitted FP1 long-run pace."""
+    out = {}
+    for code in ('R', 'S'):
+        prefix = 'gp_' + code.lower()
+        value = _sprint_form(history, target_round, code, 'driver', driver)
+        out.update({prefix + '_score': value,
+            prefix + '_team_score': _sprint_form(history, target_round, code, 'team', team),
+            prefix + '_peak_score': _sprint_form(history, target_round, code, 'driver', driver, peak=True),
+            prefix + '_available': float(np.isfinite(value)),
+            prefix + '_weekends': len({int(r['round']) for r in history
+                if r['session'] == code and int(r['round']) < target_round
+                and r['driver'] == driver and np.isfinite(numeric(r.get('position_norm')))})})
+    data = inputs.get('FP1') or {}
+    records = matched_pace_evidence(driver, data, ('long',))
+    out.update({'gp_FP1_long_score': weighted_available([(r['score'], 1.) for r in records]),
+        'gp_FP1_long_gap': weighted_available([(r['gap_pct']/PACE_MAX_GAP_PCT, 1.) for r in records]),
+        'gp_FP1_long_available': float(bool(records)),
+        'gp_FP1_long_support': float(sum(r['samples'] for r in records)),
+        'gp_FP1_long_peers': float(np.mean([r['peers'] for r in records])) if records else 0.})
+    participant = next((d for d in data.get('drivers', []) if d['driver'] == driver), {})
+    out['gp_FP1_trend'] = numeric(participant.get('long_trend_pct_per_lap'))
+    return out
+
+
+def race_specialist_inputs(row, target):
+    """Refresh grid-sensitive fields after published/manual/historical grids."""
+    q = 'Q' if target == 'R' else 'SQ'
+    qualifying = numeric(row.get(q + '_position_norm'))
+    return {'gp_' + c: numeric(row.get(c)) for c in RACE_MODEL_COLUMNS} | {
+        'gp_grid_delta': numeric(row.get('start_grid_norm')) - numeric(row.get('qualifying_grid_norm')),
+        'gp_qual_score': qualifying, 'gp_qual_gap': numeric(row.get(q + '_gap_pct'))/PACE_MAX_GAP_PCT,
+        'gp_qual_available': float(np.isfinite(qualifying))}
+
+
+def race_specialist_ranks(score_model, long_model):
+    """Equal mean-rank vote; no component's numerical scale dominates the other."""
+    first, second = np.asarray(score_model, float), np.asarray(long_model, float)
+    if (first.ndim != 1 or first.shape != second.shape or not len(first)
+            or not np.isfinite(first).all() or not np.isfinite(second).all()):
+        raise ValueError('GP specialist requires finite, matching component score vectors.')
+    denominator = max(1, len(first)-1)
+    return .5 * ((_mean_ranks(first)-1)/denominator + (_mean_ranks(second)-1)/denominator)
+
+
+def _mean_ranks(values):
+    # NumPy-only tied mean ranks; pandas is intentionally not required here.
+    order = np.argsort(values, kind='stable')
+    sorted_values = values[order]
+    starts = np.r_[0, np.flatnonzero(sorted_values[1:] != sorted_values[:-1]) + 1]
+    ends = np.r_[starts[1:], len(values)]
+    result = np.empty(len(values), float)
+    for start, end in zip(starts, ends):
+        result[order[start:end]] = (start + 1 + end) / 2.
+    return result
+
+
+def reorder_race_front(scores, specialist, drivers):
+    return _reorder_front(scores, specialist, drivers, RACE_FRONT_SIZE)
+
+
+def race_specialist_policy(active=False, trained=False):
+    return dict(active=bool(active), trained=bool(active and trained),
+        scope='GP race after loaded FP1, Sprint and Q; normal weekends, earlier stages and other modes retain the base model',
+        front_size=RACE_FRONT_SIZE, outside_candidates=False,
+        score_rule='reorder only the base top three by the equal mean-rank vote; retain score multiset and base sigma',
+        score_model=dict(features=list(RACE_SCORE_MODEL_COLUMNS) if active else [],
+            learned_share=RACE_SCORE_LEARNED_SHARE if active and trained else 0., max_depth=4,
+            file='race_score_model.json' if active else None),
+        long_model=dict(features=list(RACE_LONG_MODEL_COLUMNS) if active else [],
+            learned_share=RACE_LONG_LEARNED_SHARE if active and trained else 0., max_depth=2,
+            file='race_long_model.json' if active else None),
+        score_formula='85% unchanged explicit anchor + 15% clipped native regression',
+        long_formula='clipped native regression with separate GP/Sprint history and FP1 long-run context',
+        history='current season; separate driver/team mean and driver best over last three earlier GP and Sprint weekends; decay by calendar rounds, never current-weekend history',
+        practice='FP1 long comparisons retain two matched laps per compound and four usable comparison drivers; unknown scores/gaps stay missing',
+        base_anchor='unchanged GP/Sprint source budgets and equal starting-grid/qualifying split; no new fixed practice or history percentage',
+        training='both native regression heads pool earlier GP/Sprint rows with original weekend totals and six-round training half-life',
+        early_fallback='before four usable earlier weekends both components use the unchanged evidence anchor, with no fitted model',
+        audit_file='race_front.csv' if active else None,
+        limits='19 inspected historical GP stages, not an untouched holdout; programme, fuel, incidents and strategy remain unmodelled; simulation shares are uncalibrated')
+
 
 def sprint_specialist_mode(target, inputs):
     return target == 'S' and bool(inputs.get('FP1')) and bool(inputs.get('SQ'))

@@ -760,3 +760,103 @@ selected score and auxiliary training/input field; the other 56 retain their
 prediction/simulation/backtest tables. Original source URL/hash sets, cutoffs,
 field eligibility, original Mexico forecasts and old dated backups are retained.
 No new dependency or source is added; detailed trials/tests/data stay outside Git.
+
+
+GP RACE CORRECTION
+
+Active only for a GP race with FP1, a completed SPRINT and Q loaded. Two native
+regression models supply an ordering vote for the BASE TOP THREE. No outside
+driver is promoted. The same three score values are reassigned in that order;
+remaining drivers' scores, base score distribution and uncertainty are retained.
+Normal weekends, earlier stages and qualifying/SQ/Sprint retain their models.
+
+The small score model has 14 inputs: the seven original explicit influence scores
+plus already-completed Sprint position, completion/status, neutralisation,
+finishing gap, grid gain and the existing Sprint evidence score. Depth four;
+85% unchanged evidence anchor plus 15% clipped native prediction.
+
+The long-run model has 35 inputs: the same seven explicit scores; separate earlier
+GP/Sprint driver/team mean, driver best, availability and event count; FP1 long-run
+rank/gap/support/peer evidence; starting-grid versus qualifying-position difference,
+Q position/gap/availability, observed FP1 trend and a format flag; and the same
+observed Sprint fields. Missing pace/gaps stay unknown. History uses the last three
+earlier events of EACH format, with three-calendar-round decay and the driver's
+current team for team form. No current-weekend results enter historical form.
+The current completed Sprint enters only as pre-GP session evidence. Depth two;
+its score is the clipped native prediction. This is not 100% practice: grid,
+qualifying and historical evidence are independent model inputs too.
+
+Both heads pool earlier GP/Sprint rows with original total weight per weekend and
+six-round training half-life. Base source budgets and grid/qualifying split stay
+unchanged. All fits use native XGBoost, without sklearn. No guessed fuel, strategy,
+incident cause, weather bonus or section telemetry is added. FP1 long pace keeps
+two matched laps per compound and four usable comparison drivers; all raw quality
+and matching checks are retained. Other auxiliary lap thresholds were tested,
+with no change selected to the production two-lap rule.
+
+For each component, rank scores within the current driver field using tied mean
+ranks, then normalise (rank-1)/(driver_count-1). The vote is the equal mean of
+these two normalised ranks. Reorder only the existing base top three by the vote;
+driver code breaks ties. A globally flat vote retains base scores. Before four
+usable earlier weekends, both components use the original evidence anchor with
+no fit, so early-season base scores remain unchanged.
+
+run_info.json and influence_policy.json record race_specialist, both feature lists,
+depths, actual learned shares, scope and limits. model.json remains the base model.
+Active runs save race_score_model.json and race_long_model.json; early evidence
+files explicitly record trained=false. race_front.csv lists each driver, base
+score, both component scores, their combined rank vote, final score and top-three
+membership. Immutable forecasts hash all three files. Inactive runs ignore stale
+GP files in latest. Main table columns and commands are unchanged.
+
+Rolling native-model GP checks apply the correction only where FP1, Sprint and Q
+are available in that historical stage; fits use strictly earlier rounds. Sigma
+retains base residuals. These native checks are separate from early evidence
+forecasts and the saved 19-event benchmark. Shares remain uncalibrated.
+
+Historical comparison on identical events/stages/data/driver eligibility:
+  Winners 15/19 -> 16/19; podium drivers 37/57 -> 37/57;
+  average places out 3.3445 -> 3.3301 over all 19 complete fields.
+  Silverstone: Antonelli -> Leclerc, now correct. No previously correct winner
+  becomes wrong. Montreal, Monza and Mexico remain misses. Normal-weekend GP
+  prediction/simulation/backtest tables retain the existing treatment exactly.
+  Original Mexico forecasts stay frozen, unchanged in the benchmark.
+  GP Q stays 11/19 poles, SQ 3/6 poles, Sprint 5/6 winners.
+  Separate after-FP2 Q remains 3/12 poles, 16/36 top-three, 2.2455 error.
+
+The review covers 343 source/history/native settings and 1,674 front/blend/committee
+settings: 2,017 settings across 38,323 case-setting attempts. These are repeated
+trials on 19 GP races, not independent races or untouched future tests. Sixteen
+inventoried practical method families have recorded outcomes outside Git.
+Discovery used rounds 1-12; later checks 13-18 could not rescue a failed discovery
+candidate. Mexico was diagnostic only for selection. Both periods must retain
+winner/podium counts and ranking quality with identical field coverage. Choose
+discovery winners, podiums and ranking first; treat numerical error ties at
+12 decimal places as equal, then prefer fewer choices and smaller input models.
+
+The initially selected global top-five version had 16/19 winners, 38/57 podium
+identities and better field error, but full command verification found a normal-
+weekend rolling regression: latest Mexico-stage checks 7/8 -> 6/8. Singapore's
+previous winner became wrong in that availability mask without Sprint evidence.
+That broader activation is REJECTED. This already-tested top-three policy only
+activates with Sprint evidence; normal-weekend and earlier-stage checks retain
+base policy. No track or driver name controls activation. This is a documented
+runtime-review veto, not a claim that the global version passed every check.
+
+Five fixed seeds 0/7/42/101/2026 preserve one extra correct winner at every seed.
+Across the first 18 replay cases, baseline winners are 15/14/15/15/15 versus
+selected 16/15/16/16/16. The original Mexico winner miss stays in the benchmark.
+The gain also occurs in raw unique score leaders, not just sampled table order.
+Ranking improves and podium counts do not regress on either comparison period
+at any checked seed. Production seed stays 42. Small gains on inspected historical
+data do not establish future accuracy or predict future incidents reliably.
+
+Verification: 306 authoritative external tests, 302 pass/four FastF1-only skips.
+All 62 frozen-source CLI replays pass. The six eligible GP commands reproduce the
+selected scores and both auxiliary feature matrices, original base inputs and
+sigmas. Other 56 commands preserve prediction/simulation/backtest tables, including
+normal-weekend GPs, all qualifying/Sprint/SQ and twelve after-FP2 Q checks. Every
+source URL/hash set and cutoff matches the original. Old snapshots and original
+Mexico forecasts are retained. No tests/cache/results/ZIPs or new dependency are
+committed to Git. Further full recovery, reliability calibration and data-service
+work remain separate scope; this change does not model traffic or strategy.

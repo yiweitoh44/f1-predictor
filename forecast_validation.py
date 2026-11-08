@@ -46,6 +46,8 @@ def freeze(latest, code_root):
         files = FILES + (('pole_model.json', 'qualifying_front.csv') if info.get('qualifying_front', {}).get('active') else ())
         if info.get('sprint_specialist', {}).get('active'):
             files += ('sprint_model.json', 'sprint_front.csv')
+        if info.get('race_specialist', {}).get('active'):
+            files += ('race_score_model.json', 'race_long_model.json', 'race_front.csv')
         for name in files:
             shutil.copyfile(latest / name, pending / name)
         versions = {'python': platform.python_version()}
