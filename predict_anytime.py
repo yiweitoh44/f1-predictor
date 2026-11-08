@@ -22,8 +22,8 @@ Pooling Sprint and normal sessions is a practical small-data assumption, not
 evidence they are identical. Recent form covers four previous weekends. The
 base score combines 85% explicit session/history evidence with a 15% monotonic
 native XGBoost adjustment. SQ after FP1 has a dedicated model. Normal qualifying
-after FP3 and Sprint after FP1/SQ can reorder the base front runners using
-separate specialists; see START_HERE.txt for scope and saved-model formulas.
+after FP3, Sprint after FP1/SQ and GP race after FP1/Sprint/Q can reorder the base front
+runners using separate specialists; see START_HERE.txt for scope and saved-model formulas.
 Backtests are small and probabilities uncalibrated.
 
 TRACKS: Optional numeric geometry descriptors remain supported. tracks.csv also
@@ -424,7 +424,7 @@ def circuit_similarity(a, b):
     return float(np.exp(-4 * distance))
 
 
-def features(driver, target_code, event, history, inputs, tracks, *, sprint_qualifying=False, qualifying_front=False, sprint_specialist=False):
+def features(driver, target_code, event, history, inputs, tracks, *, sprint_qualifying=False, qualifying_front=False, sprint_specialist=False, race_specialist=False):
     code, team = driver["driver"], driver["team"]
     row = {"sprint_target": float(target_code in {"SQ", "S"}),
            "round": float(event["RoundNumber"])}
@@ -541,6 +541,9 @@ def features(driver, target_code, event, history, inputs, tracks, *, sprint_qual
     if sprint_specialist:
         row.update(influence.sprint_specialist_context(code, team, int(event['RoundNumber']), history, inputs))
         row.update(influence.sprint_specialist_inputs(row, target_code))
+    if race_specialist:
+        row.update(influence.race_specialist_context(code, team, int(event['RoundNumber']), history, inputs))
+        row.update(influence.race_specialist_inputs(row, target_code))
     return row
 
 
@@ -551,7 +554,7 @@ def add_history(history, data, rnd, location):
                 history.append({**driver, "round": rnd, "location": location, "session": data["code"]})
 
 
-def training_rows(events, all_data, family, mask, tracks, *, sprint_qualifying=False, qualifying_front=False, sprint_specialist=False):
+def training_rows(events, all_data, family, mask, tracks, *, sprint_qualifying=False, qualifying_front=False, sprint_specialist=False, race_specialist=False):
     history, rows = [], []
     for event in events:
         rnd = int(event["RoundNumber"])
@@ -568,7 +571,8 @@ def training_rows(events, all_data, family, mask, tracks, *, sprint_qualifying=F
                 if not np.isfinite(y):
                     continue
                 row = features(driver, code, event, history, inputs, tracks, sprint_qualifying=sprint_qualifying,
-                               qualifying_front=qualifying_front, sprint_specialist=sprint_specialist)
+                               qualifying_front=qualifying_front, sprint_specialist=sprint_specialist,
+                               race_specialist=race_specialist)
                 # Actual historical grids are pre-race information, but use them
                 # only at a stage where the corresponding qualifying is available.
                 grid = number(driver.get("grid"))
@@ -583,6 +587,8 @@ def training_rows(events, all_data, family, mask, tracks, *, sprint_qualifying=F
                     row.update(influence.add_influence(row, code))
                 if sprint_specialist:
                     row.update(influence.sprint_specialist_inputs(row, code))
+                if race_specialist:
+                    row.update(influence.race_specialist_inputs(row, code))
                 rows.append({**row, "label": y, "event_round": rnd,
                              "target_session": code, "driver": driver["driver"]})
         for code, _ in session_schedule(event):
@@ -595,12 +601,18 @@ def fit(frame, columns):
     sq_model = columns == influence.SPRINT_QUALIFYING_MODEL_COLUMNS
     pole_model = columns == influence.POLE_MODEL_COLUMNS
     sprint_model = columns == influence.SPRINT_MODEL_COLUMNS
+    race_score_model = columns == influence.RACE_SCORE_MODEL_COLUMNS
+    race_long_model = columns == influence.RACE_LONG_MODEL_COLUMNS
+    race_model = race_score_model or race_long_model
     learned_share = influence.SPRINT_QUALIFYING_LEARNED_SHARE if sq_model else influence.LEARNED_SHARE
 
     if pole_model:
         learned_share = influence.POLE_LEARNED_SHARE
     if sprint_model:
         learned_share = influence.SPRINT_LEARNED_SHARE
+    if race_model:
+        learned_share = (influence.RACE_SCORE_LEARNED_SHARE if race_score_model
+                         else influence.RACE_LONG_LEARNED_SHARE)
     labels = frame.label.to_numpy(dtype=np.float32)
     if pole_model:
         if not np.isfinite(labels).all() or not ((labels >= 0) & (labels <= 1)).all():
@@ -647,10 +659,14 @@ def fit(frame, columns):
     if sprint_model:
         context_columns = {c for c in columns if c not in influence.SPRINT_BASE_COLUMNS
                            and not c.endswith(('_score', '_gap'))}
+    if race_model:
+        context_columns = {c for c in columns if c not in influence.RACE_SPECIALIST_BASE_COLUMNS
+                           and not c.endswith(('_score', '_gap'))}
     booster = xgb.train(
         {
             "objective": "binary:logistic" if pole_model else "reg:squarederror",
-            "max_depth": (3 if pole_model or sprint_model else influence.SPRINT_QUALIFYING_MAX_DEPTH if sq_model else
+            "max_depth": (4 if race_score_model else 2 if race_long_model else
+                          3 if pole_model or sprint_model else influence.SPRINT_QUALIFYING_MAX_DEPTH if sq_model else
                           influence.QUALIFYING_PRACTICE_MAX_DEPTH if practice_model else 2),
             "monotone_constraints": tuple(0 if c in context_columns else 1 for c in columns),
             "eta": 0.04,
@@ -675,7 +691,8 @@ def fit(frame, columns):
             if pole_model:
                 learned = (pd.Series(learned).rank(method='average').to_numpy()-1) / max(1, len(data)-1)
             anchor = ('pole_influence_anchor' if pole_model else
-                      'sp_influence_anchor' if sprint_model else 'influence_anchor')
+                      'sp_influence_anchor' if sprint_model else
+                      'gp_influence_anchor' if race_model else 'influence_anchor')
             return ((1 - learned_share) * data[anchor].to_numpy()
                     + learned_share * learned)
 
@@ -747,7 +764,7 @@ def comparison_summary(records, target):
     return sorted(common), rows
 
 
-def train_and_check(frame, target_code, comparison_rows=None, qualifying_practice=False, sprint_qualifying=False, qualifying_front=False, sprint_specialist=False):
+def train_and_check(frame, target_code, comparison_rows=None, qualifying_practice=False, sprint_qualifying=False, qualifying_front=False, sprint_specialist=False, race_specialist=False):
     # Keep the legacy columns for Race/Sprint and competitively anchored Q.
     # Practice-only GP Q additionally uses admitted per-session evidence/support.
     # Weather, raw lap times and section fields remain excluded from every fit.
@@ -798,6 +815,15 @@ def train_and_check(frame, target_code, comparison_rows=None, qualifying_practic
                 specialist = fit(train, influence.SPRINT_MODEL_COLUMNS)
                 guess = influence.reorder_sprint_front(base_guess,
                     specialist.predict(group[influence.SPRINT_MODEL_COLUMNS]), group.driver.to_numpy())
+            if (race_specialist and target_code == 'R'
+                    and group.FP1_available.eq(1).any() and group.S_available.eq(1).any()
+                    and group.Q_available.eq(1).any()):
+                race_score = fit(train, influence.RACE_SCORE_MODEL_COLUMNS)
+                race_long = fit(train, influence.RACE_LONG_MODEL_COLUMNS)
+                vote = influence.race_specialist_ranks(
+                    race_score.predict(group[influence.RACE_SCORE_MODEL_COLUMNS]),
+                    race_long.predict(group[influence.RACE_LONG_MODEL_COLUMNS]))
+                guess = influence.reorder_race_front(base_guess, vote, group.driver.to_numpy())
             actual = group.loc[group.label.idxmin(), "driver"]
             ranks = pd.Series(guess).rank(method="average").to_numpy()
             # Compare ranks among drivers with valid classifications. Labels
@@ -839,6 +865,8 @@ def train_and_check(frame, target_code, comparison_rows=None, qualifying_practic
         print("Front correction backtests use the corrected scores; simulation spread retains base-model errors.")
     if sprint_specialist:
         print("Sprint correction backtests use the specialist order; simulation spread retains base-model errors.")
+    if race_specialist:
+        print("GP race correction backtests use the specialist order; simulation spread retains base-model errors.")
     sigma = max(float(np.std(residuals, ddof=1)), 0.03)
     return fit(frame, columns), columns, sigma, details
 
@@ -1070,16 +1098,18 @@ def run(args):
     sq_model = influence.sprint_qualifying_mode(target, current)
     front_model = influence.qualifying_front_mode(target, current)
     sprint_active = influence.sprint_specialist_mode(target, current)
+    race_active = influence.race_specialist_mode(target, current)
     frame, history = training_rows(usable_events, all_data, family, set(current), tracks,
                                    sprint_qualifying=sq_model, qualifying_front=front_model,
-                                   sprint_specialist=sprint_active)
+                                   sprint_specialist=sprint_active, race_specialist=race_active)
     if frame.empty and int(event['RoundNumber']) > 4:
         raise ValueError("No valid historical labels available for this prediction type.")
     if frame.empty:
         frame = pd.DataFrame(columns=['event_round', 'target_session', 'label', 'driver']
                              + influence.RACE_MODEL_COLUMNS
                              + (influence.POLE_MODEL_COLUMNS if front_model else [])
-                             + (influence.SPRINT_MODEL_COLUMNS if sprint_active else []))
+                             + (influence.SPRINT_MODEL_COLUMNS if sprint_active else [])
+                             + (influence.RACE_LONG_MODEL_COLUMNS if race_active else []))
     early = int(event['RoundNumber']) <= 4 and frame.event_round.nunique() < 4
     if front_model and not early and not (frame.label.eq(0).any() and frame.label.ne(0).any()):
         front_model = False
@@ -1106,7 +1136,7 @@ def run(args):
               + ". Use --roster for confirmed replacements.")
     inputs = pd.DataFrame([features(d, target, event, history, current, tracks,
         sprint_qualifying=sq_model, qualifying_front=front_model,
-        sprint_specialist=sprint_active) for d in drivers])
+        sprint_specialist=sprint_active, race_specialist=race_active) for d in drivers])
     grid_record = None
     grid_warnings = []
     grid_mode = getattr(args, 'grid_source', 'auto')
@@ -1175,6 +1205,9 @@ def run(args):
     if sprint_active:
         inputs = inputs.assign(**pd.DataFrame([
             influence.sprint_specialist_inputs(row, target) for row in inputs.to_dict('records')]))
+    if race_active:
+        inputs = inputs.assign(**pd.DataFrame([
+            influence.race_specialist_inputs(row, target) for row in inputs.to_dict('records')]))
     comparisons = []
     practice_model = influence.qualifying_practice_mode(target, current)
     if early:
@@ -1183,7 +1216,7 @@ def run(args):
         model, columns, sigma, tests = train_and_check(
             frame, target, comparison_rows=comparisons, qualifying_practice=practice_model,
             sprint_qualifying=sq_model, qualifying_front=front_model,
-            sprint_specialist=sprint_active)
+            sprint_specialist=sprint_active, race_specialist=race_active)
     if sq_model:
         print('Sprint qualifying: FP1 compound comparisons and earlier SQ history; '
               + ('early evidence fallback.' if early else 'dedicated learned score.'))
@@ -1235,6 +1268,32 @@ def run(args):
             selected=[i in members for i in range(len(names))]))
         print('Sprint: the specialist reorders the predicted top eight after FP1/SQ; '
               + ('evidence-only fallback.' if early else 'separate Sprint/GP history and FP1 pace.'))
+    race_policy = influence.race_specialist_policy(active=race_active, trained=not early)
+    race_score_model = race_long_model = None
+    race_audit = None
+    if race_active:
+        if early:
+            class RaceEvidence:
+                def predict(self, data):
+                    return data['gp_influence_anchor'].to_numpy(float)
+                def save_model(self, path):
+                    Path(path).write_text(json.dumps(dict(model_type='gp_race_evidence',
+                        trained=False, column='gp_influence_anchor')), encoding='utf-8')
+            race_score_model = race_long_model = RaceEvidence()
+        else:
+            race_score_model = fit(frame, influence.RACE_SCORE_MODEL_COLUMNS)
+            race_long_model = fit(frame, influence.RACE_LONG_MODEL_COLUMNS)
+        first = race_score_model.predict(inputs[influence.RACE_SCORE_MODEL_COLUMNS])
+        second = race_long_model.predict(inputs[influence.RACE_LONG_MODEL_COLUMNS])
+        vote = influence.race_specialist_ranks(first, second)
+        base_scores = scores.copy()
+        scores = influence.reorder_race_front(base_scores, vote, np.asarray(names))
+        members = np.lexsort((np.asarray(names), base_scores))[:influence.RACE_FRONT_SIZE]
+        race_audit = pd.DataFrame(dict(driver=names, base_score=base_scores,
+            score_model_score=first, long_model_score=second, specialist_score=vote,
+            final_score=scores, selected=[i in members for i in range(len(names))]))
+        print('GP race: score and long-run specialists reorder the predicted top three after FP1/Sprint/Q; '
+              + ('evidence-only fallback.' if early else 'base score values and uncertainty retained.'))
     win, top3, average, positions = simulate(scores, sigma, args.simulations, return_positions=True)
     output, simulation_details = prediction_tables(drivers, scores, win, top3, average, positions, target)
     folder = OUTPUT_ROOT / f"{args.year}_{int(event['RoundNumber']):02d}_{args.session}" / "latest"
@@ -1270,8 +1329,13 @@ def run(args):
     if sprint_model is not None:
         sprint_model.save_model(folder / 'sprint_model.json')
         sprint_audit.to_csv(folder / 'sprint_front.csv', index=False)
+    if race_score_model is not None:
+        race_score_model.save_model(folder / 'race_score_model.json')
+        race_long_model.save_model(folder / 'race_long_model.json')
+        race_audit.to_csv(folder / 'race_front.csv', index=False)
     active_policy = influence.policy(sprint_qualifying=sq_model, trained=not early)
     active_policy['sprint_specialist'] = sprint_policy
+    active_policy['race_specialist'] = race_policy
     (folder / "influence_policy.json").write_text(json.dumps(active_policy, indent=2), encoding="utf-8")
     inputs[[c for c in inputs if c.startswith('influence_')]].assign(driver=names).to_csv(
         folder / "session_influence.csv", index=False)
@@ -1372,13 +1436,15 @@ def run(args):
                                          if sq_model else influence.LEARNED_SHARE),
                 "qualifying_front": front_policy,
                 "sprint_specialist": sprint_policy,
+                "race_specialist": race_policy,
                 "section_pace_model_inputs": False,
                 "session_influence": active_policy,
                 "base_prediction_formula": 'influence_anchor (no ML fit)' if early else "(1-learned_share)*influence_anchor + learned_share*clip(native_model_prediction,0,1)",
-                "prediction_formula": ('base score; then reorder its top eight with sprint_model.json using the recorded auxiliary blend'
+                "prediction_formula": ('base score; then reorder its top three by the equal normalized mean-rank vote of race_score_model.json and race_long_model.json'
+                    if race_active else 'base score; then reorder its top eight with sprint_model.json using the recorded auxiliary blend'
                     if sprint_active else 'base score; then reorder its top five with pole_model.json using the recorded auxiliary blend'
                     if front_model else ('influence_anchor (no ML fit)' if early else '(1-learned_share)*influence_anchor + learned_share*clip(native_model_prediction,0,1)')),
-                "uncertainty_score_basis": ('uncalibrated fixed assumption' if early else 'base-model chronological errors; front correction preserves its score multiset') if front_model or sprint_active else 'model chronological errors',
+                "uncertainty_score_basis": ('uncalibrated fixed assumption' if early else 'base-model chronological errors; front correction preserves its score multiset') if front_model or sprint_active or race_active else 'model chronological errors',
                 "circuit_category_weights": GROUP_WEIGHTS,
                 "circuit_category_method": "weighted tag overlap; one result average per weekend; minimum two matching weekends; recency 0.85 per round",
                 "circuit_history_window_rounds": influence.HISTORY_WEEKENDS,

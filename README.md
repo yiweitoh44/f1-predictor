@@ -158,3 +158,27 @@ Active saved forecasts include `sprint_model.json` and `sprint_front.csv`.
 GP race, qualifying and SQ predictions retain their existing models. Commands,
 dependencies, lap-quality checks and the two-lap comparison rule are unchanged.
 See START_HERE for the auxiliary model and validation details.
+
+## GP race correction
+
+With FP1, a completed Sprint and qualifying available, GP forecasts use two small
+ordering models: one retains the existing session-score emphasis, and one uses
+separate GP/Sprint history and FP1 long runs. Their equal mean-rank vote reorders
+only the existing top three, preserving base score values and simulation spread.
+Normal weekends and earlier stages keep the existing model.
+
+The same saved benchmark improves winners **15/19 → 16/19**, retains **37/57**
+podium-driver matches, and improves average places out **3.344 → 3.330** over
+19 complete fields. Silverstone changes from Antonelli to the correct Leclerc
+pick; no previously correct winner becomes wrong. Montreal, Monza and Mexico
+remain winner misses. Original Mexico forecasts are retained unchanged.
+
+The winner gain holds across five simulation seeds. A broader top-five treatment
+reached one extra podium match but lowered the latest normal-weekend rolling
+backtest from 7/8 to 6/8, so it was rejected. This conservative version keeps that
+7/8 and improves the latest Sprint-weekend GP checks from 6/8 to 7/8. These are
+inspected historical cases, not an estimate of future accuracy.
+
+Active forecasts include `race_score_model.json`, `race_long_model.json` and
+`race_front.csv`. Qualifying, SQ and Sprint models, commands, dependencies and
+lap-quality checks are unchanged. See START_HERE for formulas and limits.
