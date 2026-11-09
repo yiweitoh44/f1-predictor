@@ -860,3 +860,102 @@ source URL/hash set and cutoff matches the original. Old snapshots and original
 Mexico forecasts are retained. No tests/cache/results/ZIPs or new dependency are
 committed to Git. Further full recovery, reliability calibration and data-service
 work remain separate scope; this change does not model traffic or strategy.
+
+
+BOUNDED RACE/SPRINT RECOVERY — FINAL-SCOPE ITEM 4
+
+The starting grid and qualifying-performance inputs still use their existing
+equal split. After the existing Sprint/GP ordering specialists, Race and Sprint
+can receive a bounded adjustment for starting well behind available performance
+evidence. The underlying native models and their feature lists are unchanged.
+
+Recovery requires an independently known grid, from the selected published or
+manual grid for a prediction and a valid recorded grid for a historical test.
+Qualifying-order fallback alone does not activate it. Confirmed pit-lane starters
+are excluded: the model still cannot estimate their exit delay/order.
+
+All scores below are normalized positions, with lower values better:
+  performance estimate = available weighted mean of
+    qualifying position .50, recent race-driver form .20,
+    recent race-team form .10, accepted practice long-run comparisons .20.
+  Long-run comparisons keep the existing two-lap/four-peer/quality checks.
+  FP1/FP2/FP3 comparisons use session weights 1/2/3, per accepted compound.
+  Missing evidence is omitted and its weight redistributed; never zero-filled.
+  Eligible start: grid score >= .25 and grid minus performance estimate >= .05.
+  Score adjustment = .35 * (performance estimate minus current model score),
+    bounded to [-.15, 0]; final score stays within [0,1].
+This is a limited performance allowance, not a fixed number of places gained or
+a measured overtaking probability. It also works with the existing early-season
+evidence fallback. No incident-cause/DNF adjustment, traffic/strategy simulator,
+weather score or experimental section input has been activated.
+
+HOW TO INSPECT IT
+The main terminal prediction table and commands retain their format. The terminal
+prints how many drivers received an adjustment. In the existing output directory:
+  prediction_inputs.csv: recovery_grid_known, recovery_long_score,
+    recovery_base_score, recovery_final_score, recovery_score_change.
+  run_info.json / influence_policy.json: recovery rule, weights, limits and scope.
+  simulation_details.csv: final scores actually used by the simulation.
+These files are included in immutable saved forecasts. No separate recovery CSV
+or additional model file is needed. The older sprint_front.csv/race_front.csv
+continue to show their specialist stage, before the recovery adjustment.
+Chronological backtests use the same recovery rule on strictly earlier inputs;
+the simulation spread retains the original base-model residuals. Shares remain
+uncalibrated. Qualifying and SQ scores, tables and backtests are unchanged.
+
+RESULTS AND REVIEW COVERAGE
+292 valid settings, 7,300 event-setting attempts across 19 GP and six Sprint input
+cases; 16 practical families covered. Methods included grid/qualifying shares,
+penalty and poor-qualifying rules, circuit sensitivity, strict-past driver/team
+gains, independent features, direct finish/gain/out-of-fold residual learning,
+robust/quantile/ranking losses, two-part recovery models, cars-ahead comparisons,
+training-pool/recency changes, regularization/constraints/ensembles, integration
+order, evidence scopes and relevant joint rules. Missing evidence always retained
+an explicit fallback. Two experiment-only cache-key trials were excluded and
+rerun with correct per-format training weights; they are not counted twice.
+
+Rounds 1-12 supplied discovery checks, 13-18 later checks. The original Mexico
+forecast was diagnostic and remains unchanged in the current benchmark. These
+events have been inspected repeatedly; this is not untouched future validation.
+The bounded rule preserves winner/podium totals on both comparison periods and
+at five fixed simulation seeds; seed 42 remains the production setting.
+
+Current retained benchmark, same events/stages/eligibility as before:
+  GP winners:       16/19 -> 16/19; podium identities 37/57 -> 37/57.
+  GP places out:   3.3301 -> 3.3158 across 19 complete fields.
+  Sprint winners:    5/6 -> 5/6; podium identities 14/18 -> 14/18.
+  Sprint places out:1.0909 -> 1.0000 across only ONE complete field.
+  GPQ and SQ:      11/19 and 3/6 poles, unchanged.
+  Non-pit GP grid-behind-qualifying cohort: 23 driver-event records,
+    2.8261 -> 2.3913 average places out (15.4% lower error).
+  No non-pit Sprint grid-penalty records are available in this comparison.
+
+All 19 freshly replayed GP cases have error 3.3110 with this policy; the retained
+benchmark above is 3.3158 because its original pre-race Mexico prediction is
+preserved. Do not overwrite that saved prediction or describe the new replay as
+a forecast made before its result. On the retained 18 replays, six GP fields
+improve, four worsen and eight stay equal; winner/podium counts are retained.
+
+Separate native models and a three-model quantile ensemble were also checked.
+The ensemble retains winner/podium counts and reaches 3.3014 places out in the
+19 new replays, only another .0096 places versus the simple rule. That difference
+is four total ranking-error units over 418 driver-event rows. The paired-event
+diagnostic interval overlaps zero; it does not establish a material gain after
+this large search. The simpler rule avoids extra fitted models/teacher fits.
+No rejected method is silently left as an unfinished production feature.
+
+Verification: 316 authoritative external checks (312 pass, four FastF1 skips),
+62 canonical frozen-source CLI replays plus one additional Brazil input replay.
+Source URL/hash sets, admitted laps, legacy native input matrices and base sigma
+are preserved; all Q/SQ prediction/simulation/backtest controls retain equality.
+Every saved rolling first-pick and podium count retains or improves. Old dated
+benchmark hashes and original Mexico forecasts remain intact. Additional Brazil
+outcome evaluation is reported separately from the fixed 50-event benchmark.
+No cache/results/tests/ZIPs or research reports are added to Git.
+
+Additional Brazil check after the recovery policy was locked: the model retains
+the correct Norris winner; field error improves 3.7273 -> 3.5455 over 22 drivers.
+This was a retrospective pre-GP-input replay using the recorded cutoff, not a
+new prospective forecast. Verstappen still improves only P14 -> P13 versus actual
+P2, while Leclerc worsens P7 -> P5 versus actual P8. Recovery remains imperfect.
+Brazil was not added to the 19-GP headline totals or used to retune the rule.
