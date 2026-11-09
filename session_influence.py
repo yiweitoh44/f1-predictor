@@ -529,6 +529,65 @@ def pace_score(driver, data, labels):
     return weighted_available([(r['score'], 1.) for r in matched_pace_evidence(driver, data, labels)])
 
 
+def recovery_context(driver, inputs):
+    """Existing admitted long-run comparisons; no extra laps or new source.
+
+    Later practice sessions have weights 1/2/3, applied per compound comparison,
+    matching the recovery study. Unknown pace stays missing.
+    """
+    evidence = []
+    for weight, code in enumerate(('FP1', 'FP2', 'FP3'), 1):
+        if code in inputs:
+            evidence.extend((r['score'], weight) for r in
+                            matched_pace_evidence(driver, inputs[code], ('long',)))
+    return dict(recovery_long_score=weighted_available(evidence), recovery_grid_known=0.)
+
+
+def recovery_scores(scores, rows, target_code):
+    """Bounded recovery adjustment after the existing R/S specialists.
+
+    A published/manual or independently recorded historical grid is required.
+    Qualifying fallback alone cannot establish a penalty. Confirmed pit starters
+    retain their existing treatment; their exit delay/order is not modelled.
+    """
+    original = np.asarray(scores, dtype=float)
+    if original.ndim != 1 or len(original) != len(rows) or not np.isfinite(original).all():
+        raise ValueError('Recovery needs one finite score per input row.')
+    result = original.copy()
+    if target_code not in {'R', 'S'}:
+        return result
+    for i, row in enumerate(rows):
+        grid = numeric(row.get('start_grid_norm'))
+        if numeric(row.get('recovery_grid_known')) != 1 or not .25 <= grid <= 1:
+            continue
+        pit = row.get('start_pit_lane')
+        if isinstance(pit, (bool, np.bool_)) and pit:
+            continue
+        car = weighted_available([
+            (numeric(row.get('qualifying_grid_norm')), .5),
+            (numeric(row.get('race_driver_form')), .2),
+            (numeric(row.get('race_team_form')), .1),
+            (numeric(row.get('recovery_long_score')), .2)])
+        if not np.isfinite(car) or grid - car < .05:
+            continue
+        # Move only towards better supported performance, never award a fixed
+        # number of places. Preserve the original model and uncertainty spread.
+        correction = np.clip(.35 * (max(0., car) - original[i]), -.15, 0.)
+        result[i] = np.clip(original[i] + correction, 0., 1.)
+    return result
+
+
+def recovery_policy(active=False):
+    return dict(active=bool(active), method='bounded_evidence_recovery',
+                strength=.35, maximum_score_change=.15, minimum_grid_score=.25,
+                minimum_grid_car_difference=.05,
+                evidence_weights=dict(qualifying=.5, driver_form=.2, team_form=.1, long_run=.2),
+                missing_evidence='redistribute among available evidence; no invented value',
+                requires_independent_grid=True, confirmed_pit_lane_starters_excluded=True,
+                integration='after existing specialists', uncertainty='base-model errors retained; uncalibrated',
+                no_incident_cause_adjustment=True)
+
+
 def qualifying_practice_context(driver, inputs):
     """Describe existing comparisons, including the selected qualifying inputs.
 

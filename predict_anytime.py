@@ -544,6 +544,8 @@ def features(driver, target_code, event, history, inputs, tracks, *, sprint_qual
     if race_specialist:
         row.update(influence.race_specialist_context(code, team, int(event['RoundNumber']), history, inputs))
         row.update(influence.race_specialist_inputs(row, target_code))
+    if target_code in RACE_TYPES:
+        row.update(influence.recovery_context(code, inputs))
     return row
 
 
@@ -582,6 +584,8 @@ def training_rows(events, all_data, family, mask, tracks, *, sprint_qualifying=F
                     grid if code in RACE_TYPES and ("Q" if code == "R" else "SQ") in inputs
                     and np.isfinite(grid) and grid == int(grid) and 1 <= grid <= len(label['drivers'])
                     else np.nan)
+                if code in RACE_TYPES:
+                    row['recovery_grid_known'] = float(np.isfinite(row['benchmark_grid_position']))
                 if code in RACE_TYPES and ("Q" if code == "R" else "SQ") in inputs and grid > 0:
                     row["start_grid_norm"] = (grid - 1) / max(1, len(label["drivers"]) - 1)
                     row.update(influence.add_influence(row, code))
@@ -824,6 +828,7 @@ def train_and_check(frame, target_code, comparison_rows=None, qualifying_practic
                     race_score.predict(group[influence.RACE_SCORE_MODEL_COLUMNS]),
                     race_long.predict(group[influence.RACE_LONG_MODEL_COLUMNS]))
                 guess = influence.reorder_race_front(base_guess, vote, group.driver.to_numpy())
+            guess = influence.recovery_scores(guess, group.to_dict('records'), target_code)
             actual = group.loc[group.label.idxmin(), "driver"]
             ranks = pd.Series(guess).rank(method="average").to_numpy()
             # Compare ranks among drivers with valid classifications. Labels
@@ -867,6 +872,8 @@ def train_and_check(frame, target_code, comparison_rows=None, qualifying_practic
         print("Sprint correction backtests use the specialist order; simulation spread retains base-model errors.")
     if race_specialist:
         print("GP race correction backtests use the specialist order; simulation spread retains base-model errors.")
+    if target_code in RACE_TYPES:
+        print("Recovery backtests use bounded evidence adjustments; simulation spread retains base-model errors.")
     sigma = max(float(np.std(residuals, ddof=1)), 0.03)
     return fit(frame, columns), columns, sigma, details
 
@@ -1153,6 +1160,8 @@ def run(args):
             grid_warnings = grid_store.warnings
         if grid_record:
             grid_sources.apply_grid(inputs, drivers, grid_record)
+            known_grid = {r['driver'] for r in grid_record['rows']}
+            inputs['recovery_grid_known'] = [float(name in known_grid) for name in names]
             print(f"Starting grid: {grid_record['source']} ({grid_record['url']}).")
             pit_drivers = [r['driver'] for r in grid_record['rows'] if r.get('pit_lane') is True]
             if pit_drivers:
@@ -1294,6 +1303,15 @@ def run(args):
             final_score=scores, selected=[i in members for i in range(len(names))]))
         print('GP race: score and long-run specialists reorder the predicted top three after FP1/Sprint/Q; '
               + ('evidence-only fallback.' if early else 'base score values and uncertainty retained.'))
+    recovery_policy = influence.recovery_policy(active=target in RACE_TYPES)
+    if target in RACE_TYPES:
+        base_scores = scores.copy()
+        scores = influence.recovery_scores(base_scores, inputs.to_dict('records'), target)
+        inputs['recovery_base_score'] = base_scores
+        inputs['recovery_final_score'] = scores
+        inputs['recovery_score_change'] = scores - base_scores
+        print(f"Recovery: bounded evidence adjustment for {int(np.sum(scores != base_scores))}/{len(scores)} drivers; "
+              'requires an independently known grid; confirmed pit starters excluded.')
     win, top3, average, positions = simulate(scores, sigma, args.simulations, return_positions=True)
     output, simulation_details = prediction_tables(drivers, scores, win, top3, average, positions, target)
     folder = OUTPUT_ROOT / f"{args.year}_{int(event['RoundNumber']):02d}_{args.session}" / "latest"
@@ -1336,6 +1354,7 @@ def run(args):
     active_policy = influence.policy(sprint_qualifying=sq_model, trained=not early)
     active_policy['sprint_specialist'] = sprint_policy
     active_policy['race_specialist'] = race_policy
+    active_policy['recovery'] = recovery_policy
     (folder / "influence_policy.json").write_text(json.dumps(active_policy, indent=2), encoding="utf-8")
     inputs[[c for c in inputs if c.startswith('influence_')]].assign(driver=names).to_csv(
         folder / "session_influence.csv", index=False)
@@ -1437,6 +1456,7 @@ def run(args):
                 "qualifying_front": front_policy,
                 "sprint_specialist": sprint_policy,
                 "race_specialist": race_policy,
+                "recovery": recovery_policy,
                 "section_pace_model_inputs": False,
                 "session_influence": active_policy,
                 "base_prediction_formula": 'influence_anchor (no ML fit)' if early else "(1-learned_share)*influence_anchor + learned_share*clip(native_model_prediction,0,1)",

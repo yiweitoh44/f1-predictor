@@ -182,3 +182,25 @@ inspected historical cases, not an estimate of future accuracy.
 Active forecasts include `race_score_model.json`, `race_long_model.json` and
 `race_front.csv`. Qualifying, SQ and Sprint models, commands, dependencies and
 lap-quality checks are unchanged. See START_HERE for formulas and limits.
+
+## Recovery from a poor starting position
+
+Race and Sprint forecasts now allow a bounded recovery adjustment after the
+existing ordering models. A driver starting outside the front quarter can move
+closer to the performance suggested by qualifying, recent driver/team form and
+accepted practice long runs. This requires an independently known starting grid;
+confirmed pit-lane starters retain their existing treatment. Missing evidence
+stays missing. No extra data feed or dependency is required.
+
+The retained 50-event benchmark keeps GP winners **16/19**, Sprint winners
+**5/6**, qualifying poles **11/19** and SQ poles **3/6**. GP average places out
+improves **3.330 → 3.316**; Sprint improves **1.091 → 1.000**, with only one
+complete Sprint field available. Across 23 non-pit GP driver-event cases starting
+behind their qualifying position, error falls **2.83 → 2.39 places**. Individual
+weekends can worsen. These are inspected historical comparisons.
+
+The review covered 292 settings across 16 practical method families, including
+separate learned recovery models. The bounded rule retains all winner/podium
+picks across five fixed simulation seeds and all saved rolling backtest counts.
+Original Mexico forecasts remain preserved. See START_HERE for the formula,
+comparison coverage and the existing CSV columns used to inspect adjustments.
