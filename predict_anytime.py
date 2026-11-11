@@ -593,7 +593,8 @@ def training_rows(events, all_data, family, mask, tracks, *, sprint_qualifying=F
                     row.update(influence.sprint_specialist_inputs(row, code))
                 if race_specialist:
                     row.update(influence.race_specialist_inputs(row, code))
-                rows.append({**row, "label": y, "event_round": rnd,
+                rows.append({**row, "target_position": number(driver.get('reported_position', driver.get('position'))),
+                             "target_roster_size": len(label['drivers']), "label": y, "event_round": rnd,
                              "target_session": code, "driver": driver["driver"]})
         for code, _ in session_schedule(event):
             add_history(history, data.get(code), rnd, event["Location"])
@@ -707,7 +708,7 @@ def fit(frame, columns):
 
 
 def ranking_metrics(drivers, predicted, actual):
-    """Same classified drivers for every method; tied scores share mean rank."""
+    """Compare scores with published integer positions, preserving gaps."""
     drivers = np.asarray(drivers)
     predicted, actual = np.asarray(predicted, dtype=float), np.asarray(actual, dtype=float)
     if len(drivers) < 3 or not (len(predicted) == len(actual) == len(drivers)):
@@ -715,12 +716,8 @@ def ranking_metrics(drivers, predicted, actual):
     if not np.isfinite(predicted).all() or not np.isfinite(actual).all():
         raise ValueError('Ranking comparison requires complete scores and classifications.')
     order = np.lexsort((drivers, predicted))
-    actual_order = np.lexsort((drivers, actual))
-    return dict(pick=str(drivers[order[0]]), actual=str(drivers[actual_order[0]]),
-                correct=bool(drivers[order[0]] == drivers[actual_order[0]]),
-                mean_rank_error=float(np.mean(np.abs(pd.Series(predicted).rank().to_numpy()
-                                                    - pd.Series(actual).rank().to_numpy()))),
-                top3_hits=len(set(drivers[order[:3]]) & set(drivers[actual_order[:3]])))
+    ranks = np.empty(len(drivers), dtype=int); ranks[order] = np.arange(1, len(drivers)+1)
+    return forecast_validation.outcome_metrics(drivers.tolist(), ranks.tolist(), drivers.tolist(), actual.tolist())
 
 
 def benchmark_records(group, predicted, rnd, target):
@@ -748,9 +745,35 @@ def benchmark_records(group, predicted, rnd, target):
                 or np.any(np.asarray(values) > 1)):
             record['reason'] = 'invalid qualifying positions'
         else:
-            record.update(eligible=True, **ranking_metrics(group.driver, values, group.label))
+            metrics = published_metrics(group, values)
+            record.update(metrics, eligible=metrics['ranking_eligible'])
         records.append(record)
     return records
+
+
+def published_metrics(group, scores):
+    """Historical metadata is reporting-only and never enters a fit.
+
+    Legacy caller frames without source metadata are scoreable only if their
+    normalized labels establish a complete evenly spaced classification.
+    """
+    n = len(group)
+    if 'target_roster_size' in group and group.target_roster_size.nunique() == 1:
+        n = int(group.target_roster_size.iloc[0])
+        positions = group.target_position.to_numpy(float)
+    else:
+        positions = group.label.to_numpy(float) * max(1, n-1) + 1
+        if not np.allclose(np.sort(positions), np.arange(1, n+1), atol=1e-8):
+            return dict(pick=str(group.driver.iloc[np.lexsort((group.driver.to_numpy(), scores))[0]]),
+                        actual=None, correct=None, mean_rank_error=None, top3_hits=None,
+                        winner_eligible=False, top3_eligible=False, ranking_eligible=False,
+                        reason='Original classification metadata unavailable; not renumbering legacy partial labels.')
+        positions = np.rint(positions)
+    order = np.lexsort((group.driver.to_numpy(), np.asarray(scores)))
+    ranks = np.empty(len(group), dtype=int); ranks[order] = np.arange(1, len(group)+1)
+    known = np.isfinite(positions)
+    return forecast_validation.outcome_metrics(group.driver.tolist(), ranks.tolist(),
+                                               group.driver.to_numpy()[known].tolist(), positions[known].tolist(), n)
 
 
 def comparison_summary(records, target):
@@ -829,18 +852,8 @@ def train_and_check(frame, target_code, comparison_rows=None, qualifying_practic
                     race_long.predict(group[influence.RACE_LONG_MODEL_COLUMNS]))
                 guess = influence.reorder_race_front(base_guess, vote, group.driver.to_numpy())
             guess = influence.recovery_scores(guess, group.to_dict('records'), target_code)
-            actual = group.loc[group.label.idxmin(), "driver"]
-            ranks = pd.Series(guess).rank(method="average").to_numpy()
-            # Compare ranks among drivers with valid classifications. Labels
-            # retain the original roster denominator when some results are missing.
-            actual_ranks = group.label.rank(method="average").to_numpy()
-            order = np.lexsort((group.driver.to_numpy(), guess))
-            actual_order = np.argsort(group.label.to_numpy())
-            picked = group.driver.iloc[order[0]]
             details.append({"round": int(rnd), "session": session_code,
-                            "pick": picked, "actual": actual, "correct": picked == actual,
-                            "mean_rank_error": float(np.mean(np.abs(ranks-actual_ranks))),
-                            "top3_hits": len(set(group.driver.iloc[order[:3]]) & set(group.driver.iloc[actual_order[:3]]))})
+                            **published_metrics(group, guess)})
             comparisons.extend(benchmark_records(group, guess, rnd, session_code))
     uncertainty_rounds = set(test_rounds[-UNCERTAINTY_WEEKENDS:])
     recent_errors = [r for r in errors if r['round'] in uncertainty_rounds]
@@ -848,10 +861,16 @@ def train_and_check(frame, target_code, comparison_rows=None, qualifying_practic
     residuals = exact if len(exact) >= 20 else [r["error"] for r in recent_errors]
     if len(residuals) < 2:
         raise ValueError("Insufficient earlier test errors to estimate uncertainty.")
-    print(f"Backtest: {sum(d['correct'] for d in details)}/{len(details)} first-place picks; "
-          f"{sum(d['session'] == target_code for d in details)} tests of the requested session type.")
-    print(f"Backtest ranking: mean position error {np.mean([d['mean_rank_error'] for d in details]):.2f}; "
-          f"top-three drivers found {sum(d['top3_hits'] for d in details)}/{3*len(details)}.")
+    winners = [d for d in details if d['winner_eligible']]
+    podiums = [d for d in details if d['top3_eligible']]
+    fields = [d for d in details if d['ranking_eligible']]
+    print(f"Backtest: {sum(d['correct'] for d in winners)}/{len(winners)} first-place picks; "
+          f"{len(details)} candidate tests of the requested session type.")
+    error_text = f"{np.mean([d['mean_rank_error'] for d in fields]):.2f}" if fields else 'unavailable'
+    print(f"Backtest ranking: mean position error {error_text} ({len(fields)} complete fields); "
+          f"top-three drivers found {sum(d['top3_hits'] for d in podiums)}/{3*len(podiums)}.")
+    if len(fields) < len(details):
+        print('Incomplete results: metrics use separate eligible counts; original positions and exclusions are recorded in backtest.csv.')
     common, table = comparison_summary(comparisons, target_code)
     if table:
         print(f"Backtest comparison: same {len(common)} of these {len(test_rounds)} tests; lower places out is better.")
@@ -1338,8 +1357,9 @@ def run(args):
                       source=grid_record['source'] if grid_record else
                           ('qualifying fallback' if target in RACE_TYPES else 'not applicable'))
                   for i,d in enumerate(names)]).to_csv(folder/'starting_grid.csv',index=False)
-    pd.DataFrame(tests, columns=['round','session','pick','actual','correct','mean_rank_error','top3_hits']).to_csv(folder / "backtest.csv", index=False)
-    pd.DataFrame(comparisons, columns=['round','session','method','eligible','reason','drivers','pick','actual','correct','mean_rank_error','top3_hits']).to_csv(folder / 'backtest_comparisons.csv', index=False)
+    metric_columns = ['winner_eligible','top3_eligible','ranking_eligible','reason']
+    pd.DataFrame(tests, columns=['round','session','pick','actual','correct','mean_rank_error','top3_hits'] + metric_columns).to_csv(folder / "backtest.csv", index=False)
+    pd.DataFrame(comparisons, columns=['round','session','method','eligible','drivers','pick','actual','correct','mean_rank_error','top3_hits'] + metric_columns).to_csv(folder / 'backtest_comparisons.csv', index=False)
     model.save_model(folder / "model.json")
     if pole_model is not None:
         pole_model.save_model(folder / 'pole_model.json')
@@ -1425,6 +1445,7 @@ def run(args):
                 "forecast_method": 'early_season_evidence' if early else 'native_xgboost',
                 "training_examples_used": 0 if early else len(frame),
                 "backtest_count": len(tests),
+                "backtest_eligible_counts": {k: sum(bool(t.get(k)) for t in tests) for k in ('winner_eligible','top3_eligible','ranking_eligible')},
                 "uncertainty_basis": 'uncalibrated fixed assumption' if early else 'earlier chronological residuals; uncalibrated',
                 "used_sessions": list(current), "roster_source": roster_source,
                 "prediction_drivers": names, "practice_only_drivers": practice_only,
