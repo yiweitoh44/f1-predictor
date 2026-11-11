@@ -894,7 +894,14 @@ def train_and_check(frame, target_code, comparison_rows=None, qualifying_practic
     if target_code in RACE_TYPES:
         print("Recovery backtests use bounded evidence adjustments; simulation spread retains base-model errors.")
     sigma = max(float(np.std(residuals, ddof=1)), 0.03)
-    return fit(frame, columns), columns, sigma, details
+    model = fit(frame, columns)
+    model.uncertainty_report = dict(basis='earlier base-model out-of-fold residual standard deviation',
+        residual_rows=len(residuals), residual_weekends=len(uncertainty_rounds),
+        residual_rounds=sorted(int(r) for r in uncertainty_rounds),
+        requested_session_rows=len(exact), pooled=len(exact) < 20,
+        labels='existing normalized finishing-order labels, including derived retirement orders',
+        floor=.03, calibrated=False)
+    return model, columns, sigma, details
 
 
 def early_season_model(inputs):
@@ -905,6 +912,9 @@ def early_season_model(inputs):
                          'Wait for practice/qualifying or provide a verified roster if needed.')
 
     class EvidenceModel:
+        uncertainty_report = dict(basis='fixed early-season assumption; no measured residuals',
+            residual_rows=0, residual_weekends=0, residual_rounds=[],
+            requested_session_rows=0, pooled=False, calibrated=False)
         def predict(self, data):
             return data['influence_anchor'].to_numpy(dtype=float)
 
@@ -919,7 +929,26 @@ def early_season_model(inputs):
     return EvidenceModel(), ['influence_anchor'], EARLY_SEASON_SIGMA, []
 
 
+def simulation_uncertainty(sigma, count, estimation=None):
+    """Sampling precision is not the error of the real-world prediction."""
+    if (isinstance(count, (bool, np.bool_)) or not isinstance(count, (int, np.integer)) or count < 1
+            or isinstance(sigma, (bool, np.bool_))
+            or not isinstance(sigma, (int, float, np.integer, np.floating))
+            or not np.isfinite(sigma) or sigma < 0):
+        raise ValueError('Simulation requires a nonnegative finite spread and positive integer count.')
+    return dict(noise='independent Gaussian score noise', sigma=float(sigma),
+        simulations=int(count), seed=42, calibrated=False,
+        estimation=estimation or dict(basis='caller-provided spread assumption', calibrated=False),
+        maximum_share_sampling_standard_error_pp=float(50/np.sqrt(count)),
+        sampling_error_scope='Monte Carlo precision of a share under this assumed model; not real-world forecast error',
+        small_sample_warning=bool(count < 5000))
+
+
 def simulate(scores, sigma, count, return_positions=False):
+    simulation_uncertainty(sigma, count)
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 1 or not len(scores) or not np.isfinite(scores).all():
+        raise ValueError('Simulation needs a nonempty one-dimensional array of finite scores.')
     rng = np.random.default_rng(42)
     ranks = np.argsort(scores[None, :] + rng.normal(0, sigma, (count, len(scores))), axis=1)
     win = np.bincount(ranks[:, 0], minlength=len(scores)) * 100 / count
@@ -1332,6 +1361,9 @@ def run(args):
         print(f"Recovery: bounded evidence adjustment for {int(np.sum(scores != base_scores))}/{len(scores)} drivers; "
               'requires an independently known grid; confirmed pit starters excluded.')
     win, top3, average, positions = simulate(scores, sigma, args.simulations, return_positions=True)
+    uncertainty = simulation_uncertainty(sigma, args.simulations, getattr(model, 'uncertainty_report', None))
+    if uncertainty['small_sample_warning']:
+        print('Low simulation count: shares and close ordering can vary more with sampling; this does not measure real-world accuracy.')
     output, simulation_details = prediction_tables(drivers, scores, win, top3, average, positions, target)
     folder = OUTPUT_ROOT / f"{args.year}_{int(event['RoundNumber']):02d}_{args.session}" / "latest"
     folder.mkdir(parents=True, exist_ok=True)
@@ -1454,6 +1486,7 @@ def run(args):
                 "grid_source": grid_record['source'] if grid_record else "qualifying order when available",
                 "grid_details": grid_audit,
                 "sigma_normalized_positions": sigma, "simulations": args.simulations,
+                "simulation_uncertainty": uncertainty,
                 "backtest_maximum_weekends": BACKTEST_WEEKENDS,
                 "validation_comparison": {
                     "common_rounds": comparison_summary(comparisons, target)[0],

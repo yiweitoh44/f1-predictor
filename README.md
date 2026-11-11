@@ -227,3 +227,20 @@ classifications agree on their published numeric positions. They do not supply
 additional complete Sprint/SQ numeric fields: NC/DNS/DQ entries are not assigned
 invented positions. The retained benchmark still has one complete Sprint field
 and two complete SQ fields. See START_HERE for scoring commands and limits.
+
+## Simulation uncertainty review
+
+The uncertainty review tested 96 spread/calibration settings across 16 practical
+families, with chronological discovery/later checks, five-seed finalist checks
+and simulation-count sensitivity. Some settings improve percentage scoring but
+trade off ranking stability; the promising SQ-only adjustment affects just two
+weekends. The existing independent Gaussian sampling policy is retained.
+Predictions, percentages and the 50-event benchmark are unchanged.
+
+`run_info.json` now records `simulation_uncertainty`: the actual spread basis,
+residual row/weekend counts, early-season assumption and Monte Carlo sampling
+precision. At 25,000 draws, the worst-case sampling standard error of a single
+share is about **0.32 percentage points**. This measures simulation precision
+under the assumed model, not real-world prediction accuracy. More draws do not
+solve uncertain evidence or establish calibrated chances. Low simulation counts
+receive a terminal notice; the main prediction-table format is unchanged.
