@@ -20,6 +20,50 @@ FILES = REQUIRED_FILES + ('prediction_inputs.csv', 'simulation_details.csv',
 SESSIONS = {'q': 'qualifying', 'qualifying': 'qualifying',
             'sq': 'sprint-qualifying', 'sprint-qualifying': 'sprint-qualifying',
             's': 'sprint', 'sprint': 'sprint', 'r': 'race', 'race': 'race'}
+AUXILIARY_FILES = {
+    'qualifying_front': ('pole_model.json', 'qualifying_front.csv'),
+    'sprint_specialist': ('sprint_model.json', 'sprint_front.csv'),
+    'race_specialist': ('race_score_model.json', 'race_long_model.json', 'race_front.csv')}
+
+
+def active_files(info):
+    return FILES + tuple(name for flag, names in AUXILIARY_FILES.items()
+                         if info.get(flag, {}).get('active') for name in names)
+
+
+def outcome_metrics(predicted_drivers, predicted_positions, actual_drivers, actual_positions, expected_size=None):
+    """Score published positions without renumbering partial classifications.
+
+    Winner/podium identities can be known even when full-field error cannot be
+    measured. Each metric has its own explicit eligibility flag.
+    """
+    if (not len(predicted_drivers) or len(predicted_drivers) != len(predicted_positions)
+            or len(actual_drivers) != len(actual_positions)):
+        raise ValueError('Scoring needs aligned nonempty drivers and positions.')
+    ranks = np.asarray(predicted_positions, dtype=float)
+    if not np.isfinite(ranks).all() or set(ranks) != set(range(1, len(ranks)+1)):
+        raise ValueError('Predicted order must contain every unique position.')
+    prediction = dict(zip(predicted_drivers, predicted_positions))
+    truth = dict(zip(actual_drivers, actual_positions))
+    if len(prediction) != len(predicted_drivers) or len(truth) != len(actual_drivers):
+        raise ValueError('Scoring needs unique driver identities.')
+    values = np.asarray(list(truth.values()), dtype=float)
+    if (not np.isfinite(values).all() or np.any(values < 1)
+            or np.any(values != np.floor(values)) or len(set(values)) != len(values)):
+        raise ValueError('Scoring needs unique positive published integer positions.')
+    pick = min(prediction, key=lambda d: (prediction[d], str(d)))
+    winner = next((d for d, p in truth.items() if p == 1), None)
+    full = (set(prediction) == set(truth) and len(truth) >= 3
+            and (expected_size is None or len(truth) == expected_size)
+            and set(values) == set(range(1, len(truth) + 1)))
+    podium = {1, 2, 3}.issubset(values)
+    predicted_top = set(sorted(prediction, key=lambda d: (prediction[d], str(d)))[:3])
+    return dict(pick=pick, actual=winner, correct=bool(pick == winner) if winner is not None else None,
+                winner_eligible=winner is not None, top3_eligible=podium, ranking_eligible=full,
+                top3_hits=len(predicted_top & {d for d, p in truth.items() if p <= 3}) if podium else None,
+                mean_rank_error=float(np.mean([abs(prediction[d] - truth[d]) for d in truth])) if full else None,
+                reason='' if full else 'Incomplete driver field or published positions; full-field error omitted.'
+                       if winner is not None else 'Published P1 is missing; winner and full-field error omitted.')
 
 
 def utc(value):
@@ -43,11 +87,7 @@ def freeze(latest, code_root):
     destination = parent / (created.strftime('%Y%m%dT%H%M%S%fZ') + '_' + pending.name[-8:])
     try:
         info = json.loads((latest / 'run_info.json').read_text(encoding='utf-8'))
-        files = FILES + (('pole_model.json', 'qualifying_front.csv') if info.get('qualifying_front', {}).get('active') else ())
-        if info.get('sprint_specialist', {}).get('active'):
-            files += ('sprint_model.json', 'sprint_front.csv')
-        if info.get('race_specialist', {}).get('active'):
-            files += ('race_score_model.json', 'race_long_model.json', 'race_front.csv')
+        files = active_files(info)
         for name in files:
             shutil.copyfile(latest / name, pending / name)
         versions = {'python': platform.python_version()}
@@ -80,13 +120,15 @@ def score(folder, actual_file, now=None):
     if (not isinstance(manifest, dict) or manifest.get('schema') != 1
             or not isinstance(manifest.get('files'), dict)
             or not set(REQUIRED_FILES).issubset(manifest['files'])
-            or not set(manifest['files']).issubset(FILES)):
+            or not set(manifest['files']).issubset(set(FILES).union(*AUXILIARY_FILES.values()))):
         raise ValueError('Unsupported or incomplete forecast manifest.')
     saved = {name: (folder / name).read_bytes() for name in manifest['files']}
     for name in saved:
         if hashlib.sha256(saved[name]).hexdigest() != manifest['files'][name]:
             raise ValueError('Saved forecast has changed: ' + name)
     meta = json.loads(saved['run_info.json'])
+    if not set(manifest['files']).issubset(active_files(meta)) or not set(active_files(meta)[len(FILES):]).issubset(saved):
+        raise ValueError('Active specialist files are missing or inactive files were included.')
     created, start = utc(manifest['created_utc']), utc(meta['target_start_utc'])
     end = utc(meta.get('target_end_utc') or meta['target_start_utc'])
     if end < start:
@@ -149,6 +191,8 @@ def score(folder, actual_file, now=None):
                                  & set(actual[actual.position <= 3].driver)) if top3_eligible else None),
                   drivers=len(predicted), classified_actual_drivers=len(actual),
                   mean_rank_error=None)
+    result.update(outcome_metrics(predicted.driver.tolist(), predicted.predicted_position.tolist(),
+                                 actual.driver.tolist(), actual.position.tolist()))
     if eligible:
         joined = predicted.merge(actual[['driver', 'position']], on='driver', validate='one_to_one')
         result['mean_rank_error'] = float((joined.predicted_position - joined.position).abs().mean())

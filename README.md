@@ -204,3 +204,26 @@ separate learned recovery models. The bounded rule retains all winner/podium
 picks across five fixed simulation seeds and all saved rolling backtest counts.
 Original Mexico forecasts remain preserved. See START_HERE for the formula,
 comparison coverage and the existing CSV columns used to inspect adjustments.
+
+## Validation and saved-result scoring
+
+Backtests now keep original published positions and show separate eligible
+counts for winner hits, top-three hits and full-field average places out. Missing
+P1 cannot promote P2 to a winner. A partial classification cannot become a
+complete ranking by renumbering its remaining drivers. Derived retirement orders
+remain available to the existing training process, but are not presented as
+published positions in the internal accuracy report. Exclusions appear in the
+existing backtest CSVs; model/baseline comparisons use the same complete cases.
+
+Saved forecasts with qualifying, Sprint or GP specialist models can now be
+scored correctly. Their active model/audit files are required and checked for
+changes. Old forecasts remain supported. Predictions, simulation shares and
+the retained 50-event benchmark are unchanged: **GP 16/19, qualifying 11/19,
+Sprint 5/6, SQ 3/6**. Reporting corrections can change internal ranking figures
+or make them unavailable when published positions are incomplete.
+
+Fresh OpenF1 outcomes, 12 official F1 result pages and eight final FIA
+classifications agree on their published numeric positions. They do not supply
+additional complete Sprint/SQ numeric fields: NC/DNS/DQ entries are not assigned
+invented positions. The retained benchmark still has one complete Sprint field
+and two complete SQ fields. See START_HERE for scoring commands and limits.

@@ -959,3 +959,73 @@ This was a retrospective pre-GP-input replay using the recorded cutoff, not a
 new prospective forecast. Verstappen still improves only P14 -> P13 versus actual
 P2, while Leclerc worsens P7 -> P5 versus actual P8. Recovery remains imperfect.
 Brazil was not added to the 19-GP headline totals or used to retune the rule.
+
+
+HISTORICAL VALIDATION AND SCORING — FINAL-SCOPE ITEM 5
+
+This update corrects measurement and saved-result scoring. It does not change
+predictions, model weights, admitted laps, source preference or simulation spread.
+
+1. Internal tests keep reporting-only target_position/target_roster_size metadata
+   from the source. Only reported numeric positions count as published results;
+   a provider-derived retirement order does not silently become a published rank.
+   These metadata columns never enter any native model.
+2. Winner scoring requires a known published P1. Top-three scoring requires all
+   published P1/P2/P3 identities. Full-field places out requires complete matching
+   driver fields and the complete original numeric positions. Missing results
+   are not renumbered; a runner-up cannot be promoted to a false pole/winner hit.
+3. The terminal shows separate denominators. For example a window can contain
+   eight candidate tests but fewer complete fields. If no full fields qualify,
+   ranking error says unavailable. Existing backtest.csv records winner_eligible,
+   top3_eligible, ranking_eligible and reason for each candidate. run_info.json
+   records backtest_eligible_counts; backtest_count remains the candidate count.
+4. Model/grid/qualifying/history comparisons use the same complete eligible
+   rounds for every method. Missing baseline evidence or partial outcomes exclude
+   that comparison; the reasons remain in backtest_comparisons.csv.
+5. Saved-forecast scoring now accepts, requires and verifies the active specialist
+   model/audit files frozen by this version. Previously the scorer rejected these
+   files despite freeze() saving them. Tampered/missing files fail; inactive stale
+   files are ignored when saving. Older valid snapshots still score. All result
+   checks remain offline and write evaluations separately from the saved copy.
+
+To score a saved forecast after its target session ends:
+  python predict_anytime.py --score-forecast "PATH_TO_SAVED_FORECAST" --actual-results "actual.csv"
+actual.csv needs year,round,session,driver,position. Use original positive integer
+positions, with no duplicate drivers/positions. The file must identify the same
+event/session and include published P1. A partial actual file can establish a
+winner or podium; full-field error is omitted when either driver field or numeric
+positions are incomplete. Forecast creation timing distinguishes a genuinely
+saved pre-session prediction from a historical replay. Do not relabel a replay
+as a prediction made before the event. Original forecast files stay unchanged.
+
+Coverage review: freshly downloaded all six Sprint and six SQ outcomes. Checked
+12 official Formula1.com pages and eight final FIA classification PDFs for the
+incomplete cases. All published numeric positions agree with the retained truth.
+The missing tail entries are NC/DNS/DQ or unnumbered/unclassified; SQ also has
+incomplete numeric rosters. No additional full-field cases were justified. Keep
+the one complete Sprint and two complete SQ benchmark fields; never invent a
+retirement order to increase coverage. Research and source PDFs stay outside Git.
+
+Retained same-case 50-event benchmark is unchanged:
+  Race: 16/19 winners, 37/57 podium identities, 3.3158 places out / 19 fields.
+  Q:    11/19 poles,   30/57 top-three identities, 1.9432 / 16 fields.
+  Sprint: 5/6 winners, 14/18 podium identities, 1.0000 / ONE field.
+  SQ:     3/6 poles,   10/18 top-three identities, 1.7727 / TWO fields.
+These figures use the existing verified outcome CSVs, including original Mexico
+forecasts. Internal OpenF1-only backtests have their own published-position
+coverage and can lack full-field error when the provider leaves positions blank.
+Any changed internal ranking figure reflects different scoring eligibility,
+not improved or worsened predictions. Residuals and the latest-four-window base
+uncertainty calculation retain the existing training-label policy; this update
+does not claim a calibrated spread. Reliability testing remains item 6.
+
+Verification: 328 external checks, 324 pass / four FastF1-only skips; all 63 frozen
+source-to-export replays retain predictions/simulation tables, native inputs,
+source URL/hash sets, cutoffs and sigmas. This includes the 62 canonical stages
+and the separate Brazil replay. All 50 saved forecasts score offline, including
+every active specialist type, without modifying their hashes. Old 671-file dated
+benchmark and original Mexico forecasts remain intact. A new dated backup records
+the corrected reports. No tests/cache/results/research reports are added to Git.
+
+This completes item 5's scoring/coverage review. Final release-wide verification
+will run after the remaining agreed items 6–10; no release is created here.
