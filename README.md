@@ -228,19 +228,29 @@ additional complete Sprint/SQ numeric fields: NC/DNS/DQ entries are not assigned
 invented positions. The retained benchmark still has one complete Sprint field
 and two complete SQ fields. See START_HERE for scoring commands and limits.
 
-## Simulation uncertainty review
+## Simulation uncertainty
 
-The uncertainty review tested 96 spread/calibration settings across 16 practical
-families, with chronological discovery/later checks, five-seed finalist checks
-and simulation-count sensitivity. Some settings improve percentage scoring but
-trade off ranking stability; the promising SQ-only adjustment affects just two
-weekends. The existing independent Gaussian sampling policy is retained.
-Predictions, percentages and the 50-event benchmark are unchanged.
+Mean positions are now calculated directly from the selected probability model.
+Random draws still provide winner/top-three shares and close-call percentages,
+but cannot shuffle a close predicted order just because of sampling noise.
 
-`run_info.json` now records `simulation_uncertainty`: the actual spread basis,
-residual row/weekend counts, early-season assumption and Monte Carlo sampling
-precision. At 25,000 draws, the worst-case sampling standard error of a single
-share is about **0.32 percentage points**. This measures simulation precision
-under the assumed model, not real-world prediction accuracy. More draws do not
-solve uncertain evidence or establish calibrated chances. Low simulation counts
-receive a terminal notice; the main prediction-table format is unchanged.
+Trained GP/Sprint forecasts use independent Gumbel score noise at the same
+estimated standard deviation; qualifying/SQ and early-season fallback keep
+Gaussian noise. The race-family change improves winner probability scoring on
+both the earlier and later GP checks. Percentages remain experimental model
+shares, with no claim of calibrated real-world chances.
+
+On the same retained 50-event benchmark, qualifying poles improve **11/19 → 12/19**
+and qualifying ranking error improves **1.943 → 1.932**. Suzuka's close pole pick
+changes from Russell to the correct Antonelli. This comes from consistent
+numerical integration; model training and evidence weights are unchanged.
+GP **16/19**, Sprint **5/6** and SQ **3/6** remain unchanged, as do their total
+podium matches and ranking errors. Original Mexico forecasts remain preserved.
+
+The expanded review included native-model block ensembles, learned error scales,
+driver covariance, Bayesian and Gaussian-process models, conformal/quantile
+intervals, PIT/multiclass calibration, exact likelihoods and variance reduction.
+A research Sprint residual-calibration candidate reaches **6/6**, but changes
+Singapore podium matches from **3/3 to 2/3**, with little independent validation.
+It is not installed in the default predictor. See START_HERE for that trade-off,
+research sources, coverage limits and the uncertainty metadata.
