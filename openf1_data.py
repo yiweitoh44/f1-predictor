@@ -347,6 +347,7 @@ def confirmed_driver_identities(drivers, observed_numbers, record, session):
  """Fill observed missing IDs only from dated, unambiguous entry-list numbers."""
  if not record:return drivers,[]
  existing={r['driver_number']:r for r in drivers};candidates={};added=[]
+ if len(existing)!=len(drivers):return drivers,[]  # Do not collapse ambiguous provider identities.
  for row in record['drivers']+record.get('reserves',[]):
   number=row.get('number')
   if number is not None:candidates.setdefault(number,[]).append(row)
