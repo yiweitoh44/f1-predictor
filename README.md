@@ -280,3 +280,14 @@ the same joint Gaussian draws; expected positions use the corresponding analytic
 mean. Existing terminal backtests assess the base predictor before this final
 adjustment; the six-event calibration result is a separate saved-forecast check.
 The SQ research candidate is not enabled.
+
+### Expanded recovery review
+
+The existing bounded recovery rule remains selected after a wider review of
+pairwise models, ordinal finishing distributions, assignment-based orders,
+regularized/kernel residuals, driver shrinkage and small neural residual models.
+No additional race or Sprint winners were gained. Some variants slightly reduce
+historical race ranking error while worsening other weekends or recovery cohorts.
+The recent Sprint calibration remains enabled; qualifying and SQ keep their
+existing methods. Results are experimental and selected historical comparisons
+cannot establish future accuracy.
