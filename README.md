@@ -213,12 +213,16 @@ P1 cannot promote P2 to a winner. A partial classification cannot become a
 complete ranking by renumbering its remaining drivers. Derived retirement orders
 remain available to the existing training process, but are not presented as
 published positions in the internal accuracy report. Exclusions appear in the
-existing backtest CSVs; model/baseline comparisons use the same complete cases.
+existing backtest CSVs. Model/baseline comparisons now match the same weekends
+separately for winners, top-three drivers and complete-field error, with separate
+counts. A partial classification can support the first two without supporting the
+last. run_info.json records common_rounds_by_metric; common_rounds retains the
+legacy complete-field list.
 
 Saved forecasts with qualifying, Sprint or GP specialist models can now be
 scored correctly. Their active model/audit files are required and checked for
 changes. Old forecasts remain supported. Predictions, simulation shares and
-the retained 50-event benchmark are unchanged: **GP 16/19, qualifying 11/19,
+the current retained 50-event benchmark are unchanged by scoring: **GP 16/19, qualifying 12/19,
 Sprint 5/6, SQ 3/6**. Reporting corrections can change internal ranking figures
 or make them unavailable when published positions are incomplete.
 

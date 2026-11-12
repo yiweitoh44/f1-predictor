@@ -979,9 +979,13 @@ predictions, model weights, admitted laps, source preference or simulation sprea
    ranking error says unavailable. Existing backtest.csv records winner_eligible,
    top3_eligible, ranking_eligible and reason for each candidate. run_info.json
    records backtest_eligible_counts; backtest_count remains the candidate count.
-4. Model/grid/qualifying/history comparisons use the same complete eligible
-   rounds for every method. Missing baseline evidence or partial outcomes exclude
-   that comparison; the reasons remain in backtest_comparisons.csv.
+4. Model/grid/qualifying/history comparisons match the same eligible rounds
+   across methods separately for winner, podium and full-field error. Partial
+   results can still support winner/podium comparisons. Missing evidence excludes
+   the round from every method for that metric. Counts appear in the table;
+   Complete fields counts only full-field error. run_info.json records
+   validation_comparison.common_rounds_by_metric; legacy common_rounds still
+   means complete fields. Reasons remain in backtest_comparisons.csv.
 5. Saved-forecast scoring now accepts, requires and verifies the active specialist
    model/audit files frozen by this version. Previously the scorer rejected these
    files despite freeze() saving them. Tampered/missing files fail; inactive stale
