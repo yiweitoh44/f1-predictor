@@ -21,6 +21,7 @@ SESSIONS = {'q': 'qualifying', 'qualifying': 'qualifying',
             'sq': 'sprint-qualifying', 'sprint-qualifying': 'sprint-qualifying',
             's': 'sprint', 'sprint': 'sprint', 'r': 'race', 'race': 'race'}
 AUXILIARY_FILES = {
+    'sprint_calibration': ('sprint_calibration.npz',),
     'qualifying_front': ('pole_model.json', 'qualifying_front.csv'),
     'sprint_specialist': ('sprint_model.json', 'sprint_front.csv'),
     'race_specialist': ('race_score_model.json', 'race_long_model.json', 'race_front.csv')}
