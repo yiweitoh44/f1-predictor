@@ -791,6 +791,37 @@ def comparison_summary(records, target):
     return sorted(common), rows
 
 
+def metric_comparison_summary(records, target):
+    """Match methods separately for winner, podium and full-field metrics."""
+    methods = ['Model', 'Starting grid', 'Qualifying order'] if target in RACE_TYPES else ['Model', 'History only']
+    metrics = {'winner': ('winner_eligible', 'correct'),
+               'podium': ('top3_eligible', 'top3_hits'),
+               'ranking': ('ranking_eligible', 'mean_rank_error')}
+    common = {}
+    for metric, (flag, value) in metrics.items():
+        available = [{r['round'] for r in records if r['method'] == method
+                      and r.get(flag, r.get('eligible', False))
+                      and r.get(value) is not None and np.isfinite(float(r[value]))}
+                     for method in methods]
+        common[metric] = sorted(set.intersection(*available))
+    if not any(common.values()):
+        return common, []
+    table = []
+    for method in methods:
+        row = {'Method': method}
+        selected = {r['round']: r for r in records if r['method'] == method}
+        wins = [selected[r]['correct'] for r in common['winner']]
+        podiums = [selected[r]['top3_hits'] for r in common['podium']]
+        errors = [selected[r]['mean_rank_error'] for r in common['ranking']]
+        row.update({'First correct': f"{sum(wins)}/{len(wins)}" if wins else 'unavailable',
+                    'Podium drivers' if target in RACE_TYPES else 'Top-three drivers':
+                        f"{sum(podiums)}/{3*len(podiums)}" if podiums else 'unavailable',
+                    'Avg places out': float(np.mean(errors)) if errors else 'unavailable',
+                    'Complete fields': len(errors)})
+        table.append(row)
+    return common, table
+
+
 def train_and_check(frame, target_code, comparison_rows=None, qualifying_practice=False, sprint_qualifying=False, qualifying_front=False, sprint_specialist=False, race_specialist=False):
     # Keep the legacy columns for Race/Sprint and competitively anchored Q.
     # Practice-only GP Q additionally uses admitted per-session evidence/support.
@@ -871,14 +902,14 @@ def train_and_check(frame, target_code, comparison_rows=None, qualifying_practic
           f"top-three drivers found {sum(d['top3_hits'] for d in podiums)}/{3*len(podiums)}.")
     if len(fields) < len(details):
         print('Incomplete results: metrics use separate eligible counts; original positions and exclusions are recorded in backtest.csv.')
-    common, table = comparison_summary(comparisons, target_code)
+    common, table = metric_comparison_summary(comparisons, target_code)
     if table:
-        print(f"Backtest comparison: same {len(common)} of these {len(test_rounds)} tests; lower places out is better.")
+        print("Backtest comparison: matching weekends per metric; counts shown below; lower places out is better.")
         print(pd.DataFrame(table).to_string(index=False, float_format=lambda x: f'{x:.2f}'))
     else:
         print('Backtest comparison unavailable: insufficient matching pre-session baseline evidence.')
-    if len(common) < len(test_rounds):
-        print('Incomplete comparisons are excluded from every method in the comparison table; reasons saved in backtest_comparisons.csv.')
+    if any(len(rounds) < len(test_rounds) for rounds in common.values()):
+        print('Missing comparisons are excluded from every method for that metric; reasons saved in backtest_comparisons.csv.')
     if comparison_rows is not None:
         comparison_rows.extend(comparisons)
     print(f"Simulation uncertainty uses the latest {len(uncertainty_rounds)} eligible tests; "
@@ -929,6 +960,94 @@ def early_season_model(inputs):
     return EvidenceModel(), ['influence_anchor'], EARLY_SEASON_SIGMA, []
 
 
+def sprint_calibration_features(table, scores):
+    columns = ['model_score', 'influence_history', 'influence_anchor',
+               'influence_grid_qualifying', 'start_grid_norm', 'qualifying_grid_norm',
+               'practice_evidence_score', 'race_driver_form', 'race_team_form',
+               'sprint_target', 'gap_to_fastest', 'gap_to_next']
+    out = table.copy()
+    scores = np.asarray(scores, float)
+    out['model_score'] = scores
+    out['gap_to_fastest'] = 0.
+    out['gap_to_next'] = 0.
+    groups = (table.groupby(['event_round', 'target_session'], sort=False).indices.values()
+              if 'event_round' in table else [np.arange(len(table))])
+    for ids in groups:
+        values = scores[ids]
+        gaps = np.abs(values[:, None] - values[None, :])
+        np.fill_diagonal(gaps, np.inf)
+        out.iloc[ids, out.columns.get_loc('gap_to_fastest')] = values - values.min()
+        out.iloc[ids, out.columns.get_loc('gap_to_next')] = gaps.min(axis=1) if len(ids) > 1 else 0.
+    return out.reindex(columns=columns).to_numpy(float)
+
+
+def sprint_calibration(frame, inputs, scores, sigma, target, early, target_round):
+    """Locked Sprint-only residual GP; no target results or external research files."""
+    policy = dict(active=False, reason='Sprint only; trained forecasts required',
+                  calibrated=False, backtest_scope='base predictor; excludes this final calibration',
+                  prior_rounds=[], kernel='rbf', length=.75, observation_noise=.5,
+                  bias_limit=.15, residual_window=8, minimum_residual_weekends=3)
+    if target != 'S' or early:
+        return scores, None, policy, None
+    if not (frame.event_round < target_round).all():
+        raise ValueError('Sprint calibration requires strictly earlier training weekends.')
+    records = []
+    for (rnd, code), group in frame.groupby(['event_round', 'target_session'], sort=False):
+        train = frame[frame.event_round < rnd]
+        if train.event_round.nunique() < 3:
+            continue
+        guess = fit(train, influence.RACE_MODEL_COLUMNS).predict(group[influence.RACE_MODEL_COLUMNS])
+        if code == 'S' and group.FP1_available.eq(1).any() and group.SQ_available.eq(1).any():
+            specialist = fit(train, influence.SPRINT_MODEL_COLUMNS)
+            guess = influence.reorder_sprint_front(guess,
+                specialist.predict(group[influence.SPRINT_MODEL_COLUMNS]), group.driver.to_numpy())
+        guess = influence.recovery_scores(guess, group.to_dict('records'), code)
+        chunk = group.copy()
+        chunk['corrected_error'] = group.label.to_numpy() - guess
+        records.append(chunk)
+    if not records:
+        policy['reason'] = 'No earlier out-of-fold residual weekends'
+        return scores, None, policy, None
+    residual = pd.concat(records)
+    rounds = sorted(residual.event_round.unique())[-8:]
+    residual = residual[residual.event_round.isin(rounds)]
+    policy['prior_rounds'] = [int(r) for r in rounds]
+    policy['residual_rows'] = len(residual)
+    if len(rounds) < 3:
+        policy['reason'] = 'Fewer than three earlier residual weekends'
+        return scores, None, policy, None
+    xx = sprint_calibration_features(residual, residual.label.to_numpy() - residual.corrected_error.to_numpy())
+    xs = sprint_calibration_features(inputs, scores)
+    med = np.array([np.median(v[np.isfinite(v)]) if np.isfinite(v).any() else 0. for v in xx.T])
+    missing, current_missing = ~np.isfinite(xx), ~np.isfinite(xs)
+    xx, xs = np.where(missing, med, xx), np.where(current_missing, med, xs)
+    scale = np.maximum(.1, np.std(xx, axis=0))
+    xx, xs = np.c_[(xx-med)/scale, missing], np.c_[(xs-med)/scale, current_missing]
+    def kernel(a, b):
+        distance = np.maximum(0., (a*a).sum(axis=1)[:, None] + (b*b).sum(axis=1)[None, :] - 2*a@b.T)
+        return sigma**2 * np.exp(-.5*distance/(.75**2*a.shape[1]))
+    k = kernel(xx, xx)
+    rnd = residual.event_round.to_numpy()
+    k += .25*sigma**2*(rnd[:, None] == rnd[None, :])
+    k += np.eye(len(k))*((.5*sigma)**2 + 1e-7)
+    cross = kernel(xx, xs)
+    factor = np.linalg.cholesky(k)
+    def solve(value):
+        return np.linalg.solve(factor.T, np.linalg.solve(factor, value))
+    alpha = solve(residual.corrected_error.to_numpy())
+    adjusted = scores + np.clip(cross.T@alpha, -.15, .15)
+    covariance = kernel(xs, xs) - cross.T@solve(cross) + np.eye(len(scores))*(.5*sigma)**2
+    eigenvalues, vectors = np.linalg.eigh(covariance)
+    covariance = (vectors*np.maximum(.0009, eigenvalues))@vectors.T
+    policy.update(active=True, reason='At least three strictly earlier residual weekends',
+                  noise='joint Gaussian posterior score noise', parameter_selection='fixed historical research candidate; not tuned during prediction')
+    state = dict(training_features=xx, current_features=xs, median=med, feature_scale=scale,
+                 alpha=alpha, base_scores=np.asarray(scores), adjusted_scores=adjusted,
+                 covariance=covariance, residual_rounds=rnd,
+                 residual_errors=residual.corrected_error.to_numpy())
+    return adjusted, covariance, policy, state
+
+
 def simulation_uncertainty(sigma, count, estimation=None, noise='normal'):
     """Sampling precision is not the error of the real-world prediction."""
     if (isinstance(count, (bool, np.bool_)) or not isinstance(count, (int, np.integer)) or count < 1
@@ -976,13 +1095,27 @@ def expected_positions(scores, sigma, noise='normal'):
     return .5 + pair.sum(axis=1)  # remove self-comparison .5, add initial rank 1
 
 
-def simulate(scores, sigma, count, return_positions=False, noise='normal'):
+def simulate(scores, sigma, count, return_positions=False, noise='normal', covariance=None):
     simulation_uncertainty(sigma, count, noise=noise)
     scores = np.asarray(scores, dtype=float)
     average = expected_positions(scores, sigma, noise)
     rng = np.random.default_rng(42)
     perturbations = (rng.normal(0, sigma, (count, len(scores))) if noise == 'normal' else
                      rng.gumbel(0, sigma*np.sqrt(6)/np.pi, (count, len(scores))))
+    if covariance is not None:
+        from math import erf
+        covariance = np.asarray(covariance, float)
+        if (noise != 'normal' or covariance.shape != (len(scores), len(scores))
+                or not np.isfinite(covariance).all()
+                or not np.allclose(covariance, covariance.T)):
+            raise ValueError('Joint Gaussian simulation requires a finite symmetric covariance.')
+        factor = np.linalg.cholesky(covariance)
+        variance = np.diag(covariance)[:, None] + np.diag(covariance)[None, :] - 2*covariance
+        difference = (scores[:, None]-scores[None, :])/np.sqrt(np.maximum(1e-12, variance))
+        pair = .5 + .5*np.fromiter((erf(v/np.sqrt(2)) for v in difference.ravel()),
+                                   float, count=difference.size).reshape(difference.shape)
+        average = .5 + pair.sum(axis=1)
+        perturbations = np.random.default_rng(42).normal(size=(count, len(scores)))@factor.T
     ranks = np.argsort(scores[None, :] + perturbations, axis=1)
     win = np.bincount(ranks[:, 0], minlength=len(scores)) * 100 / count
     top3 = np.bincount(ranks[:, :min(3, len(scores))].ravel(), minlength=len(scores)) * 100 / count
@@ -1393,8 +1526,19 @@ def run(args):
     # Keep the original fixed early-season assumption. The race-family law is
     # supported by earlier-event-only comparisons once a native model is fitted.
     noise = 'gumbel' if target in RACE_TYPES and not early else 'normal'
-    win, top3, average, positions = simulate(scores, sigma, args.simulations, return_positions=True, noise=noise)
+    scores, posterior_covariance, sprint_calibration_policy, calibration_state = sprint_calibration(
+        frame, inputs, scores, sigma, target, early, int(event['RoundNumber']))
+    if sprint_calibration_policy['active']:
+        noise = 'normal'
+        print('Sprint calibration: earlier-weekend errors adjust scores and joint uncertainty; base backtests exclude this final adjustment.')
+    win, top3, average, positions = simulate(scores, sigma, args.simulations,
+        return_positions=True, noise=noise, covariance=posterior_covariance)
     uncertainty = simulation_uncertainty(sigma, args.simulations, getattr(model, 'uncertainty_report', None), noise=noise)
+    if sprint_calibration_policy['active']:
+        uncertainty.update(noise='joint Gaussian posterior score noise', noise_law='joint_normal',
+            sigma_basis='base residual sigma; marginal posterior spreads saved in sprint_calibration.npz',
+            mean_position_basis='analytic expectation under saved joint Gaussian covariance',
+            calibration=sprint_calibration_policy)
     if uncertainty['small_sample_warning']:
         print('Low simulation count: shares and close-call estimates can vary more with sampling; this does not measure real-world accuracy.')
     output, simulation_details = prediction_tables(drivers, scores, win, top3, average, positions, target)
@@ -1405,6 +1549,9 @@ def run(args):
     pd.DataFrame(quality_rows, columns=['session','policy','driver','lap_number','accepted','quality_state','reason',
         'compound','stint','tyre_age_at_start','derived_tyre_life','freshness_basis','tyre_evidence_issue','scheduled_elapsed_seconds']).to_csv(
         folder / 'lap_quality.csv', index=False)
+    if calibration_state is not None:
+        np.savez(folder / 'sprint_calibration.npz', **calibration_state,
+                 drivers=np.asarray(names, dtype=str))
     output.to_csv(folder / "predictions.csv", index=False)
     simulation_details.to_csv(folder / 'simulation_details.csv', index=False)
     frame.to_csv(folder / "training.csv", index=False)
@@ -1523,13 +1670,14 @@ def run(args):
                 "backtest_maximum_weekends": BACKTEST_WEEKENDS,
                 "validation_comparison": {
                     "common_rounds": comparison_summary(comparisons, target)[0],
+                    "common_rounds_by_metric": metric_comparison_summary(comparisons, target)[0],
                     "scope": "native-model chronological checks; early evidence forecasts are scored separately",
                     "model_order": "score order (expected mean-position order under shared simulation noise)",
                     "grid_basis": "historical OpenF1 grid when qualifying is available; current published revisions; no qualifying fallback for a missing benchmark grid",
-                    "missing_baseline": "exclude the weekend from every method in the comparison table; retain full model backtest report",
+                    "missing_baseline": "exclude the weekend from every method for the affected metric; retain full model backtest report",
                     "ties": "integer published-position scoring; driver code breaks tied score order"},
                 "output_policy": {
-                    "order": "analytic expected position under selected iid noise law, then model score, then driver code",
+                    "order": "analytic expected position under recorded noise law/covariance, then model score, then driver code",
                     "close_call_ahead_pct_range": [CLOSE_CALL_MIN_PCT, CLOSE_CALL_MAX_PCT],
                     "close_call": "Race/Sprint lower row only; fraction of the same simulations where this driver finishes ahead of the adjacent driver above",
                     "simulation_details": "sampled first/top-three shares, model scores, analytic means and sampled adjacent comparisons saved separately"},
@@ -1543,6 +1691,7 @@ def run(args):
                 "qualifying_front": front_policy,
                 "sprint_specialist": sprint_policy,
                 "race_specialist": race_policy,
+                "sprint_calibration": sprint_calibration_policy,
                 "recovery": recovery_policy,
                 "section_pace_model_inputs": False,
                 "session_influence": active_policy,
@@ -1568,6 +1717,9 @@ def run(args):
                     "status": "disabled; legacy diagnostic evidence ignored"},
                 "tracks": tracks, "upgrades": "not separately measured or modelled",
                 "historical_data": "current published revisions, not archived as-of snapshots"}
+    if sprint_calibration_policy['active']:
+        metadata['prediction_formula'] += '; then bounded earlier-weekend GP residual adjustment'
+        metadata['validation_comparison']['scope'] += '; Sprint checks exclude the final residual calibration'
     source_manifest = dict(provider='OpenF1',
         archive_root=str(store.client.root),
         cache_recoveries=schedule_client.cache_events + store.client.cache_events,
