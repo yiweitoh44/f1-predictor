@@ -238,9 +238,10 @@ Mean positions are now calculated directly from the selected probability model.
 Random draws still provide winner/top-three shares and close-call percentages,
 but cannot shuffle a close predicted order just because of sampling noise.
 
-Trained GP/Sprint forecasts use independent Gumbel score noise at the same
-estimated standard deviation; qualifying/SQ and early-season fallback keep
-Gaussian noise. The race-family change improves winner probability scoring on
+Trained GP forecasts and Sprints without enough calibration history use
+independent Gumbel score noise at the same estimated standard deviation. Trained
+Sprints with sufficient history use the joint residual calibration below.
+Qualifying/SQ and early-season fallback keep Gaussian noise. The race-family change improves winner probability scoring on
 both the earlier and later GP checks. Percentages remain experimental model
 shares, with no claim of calibrated real-world chances.
 
@@ -248,13 +249,34 @@ On the same retained 50-event benchmark, qualifying poles improve **11/19 → 12
 and qualifying ranking error improves **1.943 → 1.932**. Suzuka's close pole pick
 changes from Russell to the correct Antonelli. This comes from consistent
 numerical integration; model training and evidence weights are unchanged.
-GP **16/19**, Sprint **5/6** and SQ **3/6** remain unchanged, as do their total
-podium matches and ranking errors. Original Mexico forecasts remain preserved.
+GP **16/19** and SQ **3/6** remain unchanged. Sprint calibration below now improves
+its winner count to **6/6**. Original Mexico forecasts remain preserved.
 
 The expanded review included native-model block ensembles, learned error scales,
 driver covariance, Bayesian and Gaussian-process models, conformal/quantile
 intervals, PIT/multiclass calibration, exact likelihoods and variance reduction.
-A research Sprint residual-calibration candidate reaches **6/6**, but changes
-Singapore podium matches from **3/3 to 2/3**, with little independent validation.
-It is not installed in the default predictor. See START_HERE for that trade-off,
-research sources, coverage limits and the uncertainty metadata.
+The selected Sprint residual calibration is now enabled for sufficient history.
+Against the current analytic baseline, it retains every event's podium-driver
+count; the earlier reported Singapore loss used an older sampled-order baseline.
+See START_HERE for research sources, coverage limits and uncertainty metadata.
+
+### Sprint residual calibration
+
+Trained Sprint forecasts now use the tested earlier-weekend residual adjustment
+once three earlier residual weekends exist. It uses the latest eight such weekends,
+with all fold models trained strictly before their held-out weekend. Race,
+qualifying and SQ forecasts retain their existing methods. Early or sparse Sprint
+history keeps the existing forecast too.
+
+Across the same six Sprint forecasts, winner picks improve **5/6 → 6/6**;
+correct podium-driver counts remain **14/18**, with no per-event count loss against
+the current analytic baseline. Whole-field error improves **1.00 → 0.91** on the
+one complete field. These are inspected historical results, not a future guarantee.
+
+`sprint_calibration.npz` saves the fitted adjustment, training features, prior
+rounds and joint covariance; active files are frozen and verified with the forecast.
+`run_info.json` identifies activation and assumptions. Shares and close calls use
+the same joint Gaussian draws; expected positions use the corresponding analytic
+mean. Existing terminal backtests assess the base predictor before this final
+adjustment; the six-event calibration result is a separate saved-forecast check.
+The SQ research candidate is not enabled.

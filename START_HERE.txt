@@ -1050,11 +1050,13 @@ WHAT IS ACTIVE
    Changing --simulations cannot shuffle the predicted order. Winner/top-three
    shares and close-call estimates still come from the same coherent joint draws.
    Very close sampled shares can fluctuate around the fixed expected order.
-2. Trained Race/Sprint forecasts use Gumbel score noise, with scale sigma*sqrt(6)/pi
+2. Trained Race/Sprint base forecasts use Gumbel score noise, with scale sigma*sqrt(6)/pi
    so its standard deviation matches the existing error-based sigma. No new
    fitting weight or driver-specific rule is added. Q/SQ and fixed early-season
    fallback retain Gaussian noise. Sigma remains the latest-four-window base
-   residual standard deviation, floor .03; early sigma remains .20.
+   residual standard deviation, floor .03; early sigma remains .20. Eligible
+   Sprints now replace the final noise/mean with the joint residual calibration
+   documented below; this base sigma supplies its kernel/noise scale.
 3. run_info.json/simulation_uncertainty records the law, scale, mean-position
    basis, estimation provenance, residual row/weekend counts/rounds, pooling,
    label policy, seed and sampling precision. A row is not an independent weekend.
@@ -1132,18 +1134,14 @@ The ideas were adapted to the existing native-model pipeline; this does not
 claim a neural network was installed or every published algorithm was exhausted.
 
 IMPORTANT ALTERNATIVES AND LIMITS
-A Gaussian-process residual-calibration trial reaches 6/6 Sprint winners and
-.9091 places out on the single complete field, retaining 14/18 podium identities.
-The improvement includes Zandvoort's winner. However, Singapore's podium matches
-fall 3/3 -> 2/3, offsetting an earlier podium gain. Only three Sprint events use
-the pooled calibration, and only one supplies a complete ranking. Its pure
-Sprint-history version affects just two events with no complete active field.
-Source-to-candidate checks and five seeds reproduce the trial. A further 30
-bias/covariance/noise-law combinations did not remove the later podium trade-off
-while retaining the extra winner. It remains a
-research alternative rather than the default: this is a real validation trade-off,
-not a claim that the method failed or could not be implemented. No field accuracy
-or calibrated certainty is claimed from six selected events.
+The Gaussian-process Sprint residual calibration is now enabled for sufficient
+history. It reaches 6/6 Sprint winners, .9091 places out on ONE complete field,
+and retains14/18podium identities. Against the current analytic baseline, no
+Sprint event loses a podium-driver match. The earlier Singapore3/3->2/3rationale
+used an older sampled-order baseline and is withdrawn. Three later Sprint events
+activate calibration; earlier three keep the existing forecast. Source-to-candidate
+checks reproduce the fitted adjustment. Six selected events do not establish
+future accuracy or calibrated certainty. SQ calibration remains disabled.
 
 Some covariance/GP/ensemble settings improve individual measures while hurting
 other formats/periods. Conformal intervals often become very wide or the full
@@ -1162,3 +1160,30 @@ current default outputs. Research, PDFs, tests, cache and results stay outside G
 Remaining agreed items are 7–10. This does not prove no future method can improve
 these results; every identified implementable method in this review has a
 recorded outcome, including the rejected and data-limited alternatives.
+
+SPRINT RESIDUAL CALIBRATION
+---------------------------
+Automatic for trained Sprint forecasts with at least three earlier out-of-fold
+residual weekends. Retains latest eight residual weekends and strictly earlier
+fold fits; no target-result access and no downloaded research files required.
+Race/Q/SQ and early/sparse Sprint keep their existing forecast paths.
+
+The locked residual GP uses an RBF kernel (length .75), observation noise .5 of
+base sigma, whole-weekend kernel component .25*sigma^2, jitter 1e-7, bounded score
+change +/- .15, and posterior covariance eigenvalue floor .0009. Preprocessing
+uses historical medians/scales and missingness flags; no target labels fitted.
+No new Python dependency. All percentages/close calls share joint Gaussian draws;
+mean positions use the same covariance analytically and do not depend on seed.
+
+Inspect run_info.json sprint_calibration and simulation_uncertainty. The active
+sprint_calibration.npz file records drivers, training/current features, medians,
+feature scales, fitted alpha, residual errors/rounds, base/adjusted scores and
+covariance. It is a required hashed file in active saved forecasts. Older saved
+forecasts remain supported; inactive stale files are not frozen.
+
+Same six Sprint forecasts: winners 5/6 -> 6/6; podium identities 14/18 retained;
+full-field error 1.0000 -> .9091 on ONE complete field. Original Mexico forecasts
+and other-category benchmarks remain retained. Later Sprint forecasts are not
+guaranteed to improve. Base chronological terminal backtests and sigma estimation
+remain before this final adjustment and are labelled accordingly; do not describe
+the six-event saved-forecast result as a 6/6 rolling internal backtest.
