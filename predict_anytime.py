@@ -791,6 +791,37 @@ def comparison_summary(records, target):
     return sorted(common), rows
 
 
+def metric_comparison_summary(records, target):
+    """Match methods separately for winner, podium and full-field metrics."""
+    methods = ['Model', 'Starting grid', 'Qualifying order'] if target in RACE_TYPES else ['Model', 'History only']
+    metrics = {'winner': ('winner_eligible', 'correct'),
+               'podium': ('top3_eligible', 'top3_hits'),
+               'ranking': ('ranking_eligible', 'mean_rank_error')}
+    common = {}
+    for metric, (flag, value) in metrics.items():
+        available = [{r['round'] for r in records if r['method'] == method
+                      and r.get(flag, r.get('eligible', False))
+                      and r.get(value) is not None and np.isfinite(float(r[value]))}
+                     for method in methods]
+        common[metric] = sorted(set.intersection(*available))
+    if not any(common.values()):
+        return common, []
+    table = []
+    for method in methods:
+        row = {'Method': method}
+        selected = {r['round']: r for r in records if r['method'] == method}
+        wins = [selected[r]['correct'] for r in common['winner']]
+        podiums = [selected[r]['top3_hits'] for r in common['podium']]
+        errors = [selected[r]['mean_rank_error'] for r in common['ranking']]
+        row.update({'First correct': f"{sum(wins)}/{len(wins)}" if wins else 'unavailable',
+                    'Podium drivers' if target in RACE_TYPES else 'Top-three drivers':
+                        f"{sum(podiums)}/{3*len(podiums)}" if podiums else 'unavailable',
+                    'Avg places out': float(np.mean(errors)) if errors else 'unavailable',
+                    'Complete fields': len(errors)})
+        table.append(row)
+    return common, table
+
+
 def train_and_check(frame, target_code, comparison_rows=None, qualifying_practice=False, sprint_qualifying=False, qualifying_front=False, sprint_specialist=False, race_specialist=False):
     # Keep the legacy columns for Race/Sprint and competitively anchored Q.
     # Practice-only GP Q additionally uses admitted per-session evidence/support.
@@ -871,14 +902,14 @@ def train_and_check(frame, target_code, comparison_rows=None, qualifying_practic
           f"top-three drivers found {sum(d['top3_hits'] for d in podiums)}/{3*len(podiums)}.")
     if len(fields) < len(details):
         print('Incomplete results: metrics use separate eligible counts; original positions and exclusions are recorded in backtest.csv.')
-    common, table = comparison_summary(comparisons, target_code)
+    common, table = metric_comparison_summary(comparisons, target_code)
     if table:
-        print(f"Backtest comparison: same {len(common)} of these {len(test_rounds)} tests; lower places out is better.")
+        print("Backtest comparison: matching weekends per metric; counts shown below; lower places out is better.")
         print(pd.DataFrame(table).to_string(index=False, float_format=lambda x: f'{x:.2f}'))
     else:
         print('Backtest comparison unavailable: insufficient matching pre-session baseline evidence.')
-    if len(common) < len(test_rounds):
-        print('Incomplete comparisons are excluded from every method in the comparison table; reasons saved in backtest_comparisons.csv.')
+    if any(len(rounds) < len(test_rounds) for rounds in common.values()):
+        print('Missing comparisons are excluded from every method for that metric; reasons saved in backtest_comparisons.csv.')
     if comparison_rows is not None:
         comparison_rows.extend(comparisons)
     print(f"Simulation uncertainty uses the latest {len(uncertainty_rounds)} eligible tests; "
@@ -1523,10 +1554,11 @@ def run(args):
                 "backtest_maximum_weekends": BACKTEST_WEEKENDS,
                 "validation_comparison": {
                     "common_rounds": comparison_summary(comparisons, target)[0],
+                    "common_rounds_by_metric": metric_comparison_summary(comparisons, target)[0],
                     "scope": "native-model chronological checks; early evidence forecasts are scored separately",
                     "model_order": "score order (expected mean-position order under shared simulation noise)",
                     "grid_basis": "historical OpenF1 grid when qualifying is available; current published revisions; no qualifying fallback for a missing benchmark grid",
-                    "missing_baseline": "exclude the weekend from every method in the comparison table; retain full model backtest report",
+                    "missing_baseline": "exclude the weekend from every method for the affected metric; retain full model backtest report",
                     "ties": "integer published-position scoring; driver code breaks tied score order"},
                 "output_policy": {
                     "order": "analytic expected position under selected iid noise law, then model score, then driver code",
