@@ -291,3 +291,22 @@ historical race ranking error while worsening other weekends or recovery cohorts
 The recent Sprint calibration remains enabled; qualifying and SQ keep their
 existing methods. Results are experimental and selected historical comparisons
 cannot establish future accuracy.
+
+### Confirmed entrants and substitutions
+
+Automatic roster selection now checks dated FIA entry lists before the prediction
+cutoff, including eligible revisions. FP1-only substitutes stay separate from race
+entrants. A later complete competitive session can supersede an older entry list;
+incomplete lists cannot. `--roster` remains the explicit override. Missing or
+unreadable confirmation keeps the existing fallback and prints a warning.
+
+Entrant numbers from clean, unambiguous lists can restore a missing OpenF1 driver
+identity only when that number appears in observed session data. Footnoted numbers
+are not guessed, existing identities are never overwritten, and the same lap
+quality/support checks still apply. Mexico's omitted FP3 Lawson identity is a
+verified example. Source documents, publication/issue times, hashes, warnings and
+practice-only names are recorded in `run_info.json` under `roster_selection`.
+
+These are roster/data corrections, with no changes to model weights. Historical
+forecasts remain experimental; newly scoreable full fields are reported separately
+from comparisons on the previously eligible fields.

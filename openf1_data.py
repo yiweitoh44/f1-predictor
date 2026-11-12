@@ -343,6 +343,24 @@ def quality_laps(laps,stints,drivers,control,pits,start,cutoff,policy='strict',p
    accepted.append(dict(Driver=mapping[num],Compound=tyre['compound'],TyreLife=initial_age+n-tyre['lap_start']+1,FreshTyre=initial_age==0,LapNumber=n,Stint=tyre['stint_number'],LapStartTime=t-start,lap_seconds=duration))
  return pd.DataFrame(accepted,columns=['Driver','Compound','TyreLife','FreshTyre','LapNumber','Stint','LapStartTime','lap_seconds']),audit
 
+def confirmed_driver_identities(drivers, observed_numbers, record, session):
+ """Fill observed missing IDs only from dated, unambiguous entry-list numbers."""
+ if not record:return drivers,[]
+ existing={r['driver_number']:r for r in drivers};candidates={};added=[]
+ if len(existing)!=len(drivers):return drivers,[]  # Do not collapse ambiguous provider identities.
+ for row in record['drivers']+record.get('reserves',[]):
+  number=row.get('number')
+  if number is not None:candidates.setdefault(number,[]).append(row)
+ for num in observed_numbers-set(existing):
+  matches=candidates.get(num,[])
+  if len(matches)!=1:continue
+  row=matches[0]
+  if any(r.get('name_acronym')==row['driver'] for r in existing.values()):continue
+  existing[num]=dict(driver_number=num,name_acronym=row['driver'],full_name=row['name'],
+      team_name=row['team'],session_key=session['session_key'],meeting_key=session['meeting_key'],entry_identity_restored=True)
+  added.append(row['driver'])
+ return list(existing.values()),added
+
 class Store:
  def __init__(self,client,year,now,pace_function,policy='standard'):
   self.client=client;self.year=year;self.now=now;self.pace_function=pace_function;self.policy=policy;self.unavailable=[];self.warnings=[];self.memory={}
@@ -360,6 +378,10 @@ class Store:
   try:
    drivers=get('drivers');results=[] if code.startswith('FP') else get('session_result')
    if len(drivers)<3:raise ValueError('Incomplete OpenF1 driver roster')
+   record=getattr(self,'confirmed_entries',{}).get(rnd)
+   if record and stamp(record['known_utc'])>self.now:raise ValueError('Entry-list identity is after cutoff')
+   drivers,added=confirmed_driver_identities(drivers,{r['driver_number'] for r in results},record,session)
+   if added:self.warnings.append(dict(round=rnd,session=code,reason='Confirmed entry list restored missing result identities: '+', '.join(added)))
    n=len(drivers)
    # Preserve full finishing-order labels, including retired/not-classified
    # entries, only when the source's reported sequence is internally ordered.
@@ -383,6 +405,9 @@ class Store:
     control=get('race_control')
     if not any(r.get('flag')=='CHEQUERED' and start<=stamp(r['date'])<self.now for r in control) and self.now<start+pd.Timedelta(days=1):raise ValueError('No observed chequered flag before cutoff; conservative 24-hour fallback not reached')
     laps=get('laps');stints=get('stints');pits=get('pit')
+    drivers,added=confirmed_driver_identities(drivers,{r['driver_number'] for r in laps},record,session)
+    n=len(drivers)
+    if added:self.warnings.append(dict(round=rnd,session=code,reason='Confirmed entry list restored missing timing identities: '+', '.join(added)))
     missing=empty_pace_feeds(laps,stints,control,pits,self.now)
     required=[name for name in missing if name!='pit']
     if required:
@@ -409,7 +434,7 @@ class Store:
    records=[]
    for d in drivers:
     num=d['driver_number'];result=positions.get(num,{});pos=result.get('position');pos=pos if isinstance(pos,(int,float)) and 1<=pos<=n else None
-    row=dict(reported_position=result.get('reported_position',pos),derived_finishing_order=result.get('derived_order',False),driver=d['name_acronym'],name=d.get('full_name') or d['name_acronym'],team=d.get('team_name') or 'Unknown',position=pos,position_norm=(pos-1)/(n-1) if pos else None,grid=grid.get(num),gap_pct=None,laps=result.get('number_of_laps'),sections=[],**pace.get(d['name_acronym'],{}))
+    row=dict(identity_source='fia_entry' if d.get('entry_identity_restored') else 'openf1',reported_position=result.get('reported_position',pos),derived_finishing_order=result.get('derived_order',False),driver=d['name_acronym'],name=d.get('full_name') or d['name_acronym'],team=d.get('team_name') or 'Unknown',position=pos,position_norm=(pos-1)/(n-1) if pos else None,grid=grid.get(num),gap_pct=None,laps=result.get('number_of_laps'),sections=[],**pace.get(d['name_acronym'],{}))
     if code in {'R','S'}:
      finished=None if not all(k in result for k in ['dnf','dns','dsq']) else float(not any(result[k] for k in ['dnf','dns','dsq']))
      row.update(finished=finished,laps_completed_fraction=(result.get('number_of_laps') or 0)/race_laps if race_laps else None,finish_gap_pct=None,grid_gain_norm=(grid[num]-pos)/(n-1) if grid.get(num) and pos else None,neutralized_lap_fraction=None)
@@ -425,7 +450,7 @@ class Store:
     observed=dict(AirTemp=None,TrackTemp=None,Rainfall=None)
     self.warnings.append(dict(round=rnd,session=code,endpoint='weather',reason=str(exc)))
     print(f'  R{rnd} {code}: weather unavailable; retaining validated pace.',flush=True)
-   data=dict(code=code,drivers=records,weather=observed,lap_data_loaded=lapdata,pace_summary_version=2,section_analysis={'enabled':False},source='OpenF1',quality_policy=self.policy,lap_quality_audit=audit)
+   data=dict(code=code,drivers=records,competitive_roster_complete=bool(competitive and len(results)==len(drivers) and {r['driver_number'] for r in results}=={d['driver_number'] for d in drivers}),weather=observed,lap_data_loaded=lapdata,pace_summary_version=2,section_analysis={'enabled':False},source='OpenF1',quality_policy=self.policy,lap_quality_audit=audit)
    self.memory[identity]=data;return data
   except (ValueError,KeyError,TypeError,OSError,requests.RequestException) as exc:
    self.unavailable.append(dict(round=rnd,session=code,reason=str(exc)));self.memory[identity]=None
