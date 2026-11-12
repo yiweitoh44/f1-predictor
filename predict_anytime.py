@@ -39,9 +39,10 @@ WEATHER/UPGRADES: Observed weather comes from completed sessions, not forecasts.
 active model input in this version. There is no upgrade-news feed or quantified
 upgrade effect. Recent team results can reflect changes without identifying them.
 
-ROSTER/GRID: Before running this weekend, the last known competitive roster is
-assumed unchanged. Practice reserve drivers do not replace those entries. Supply
---roster with driver,team,name columns to correct it. After qualifying, automatic
+ROSTER/GRID: Dated FIA entry lists confirm entrants before the cutoff. A complete
+later competitive session can supersede an older list; FP1 reserves stay separate.
+--roster overrides automatic entries. Without verified entries, the existing
+competitive/practice assumptions remain explicit. After qualifying, automatic
 grid selection prefers dated FIA documents, then F1/OpenF1 records observed
 before the cutoff. Qualifying order is the fallback. --grid overrides sources;
 --grid-source qualifying explicitly uses qualifying order. Pit-lane starters
@@ -68,6 +69,7 @@ Section pace remains disabled and excluded from training and predictions.
 from __future__ import annotations
 import argparse
 import json
+import hashlib
 import logging
 import re
 from pathlib import Path
@@ -1261,6 +1263,9 @@ def run(args):
         store.pace_function = sprint_qualifying_pace_summary
     store.client.provenance.update(schedule_client.provenance)
     print(f"Target: {args.year} {event['EventName']} / {args.session}. Cutoff: {now.isoformat()}")
+    entry_store = grid_sources.EntryStore(CACHE_ROOT, args.offline, args.refresh)
+    entry_record = None if args.roster else entry_store.resolve(args.year, event, target, now)
+    store.confirmed_entries = {int(event['RoundNumber']): entry_record} if entry_record else {}
     current = {}
     for code in allowed:
         data = store.get(event, code)
@@ -1332,26 +1337,51 @@ def run(args):
     if front_model and not early and not (frame.label.eq(0).any() and frame.label.ne(0).any()):
         front_model = False
         print('Pole correction unavailable: earlier original pole/non-pole labels are insufficient; retaining base model.')
-    # FP1 reserve drivers must not automatically replace competitive entrants.
+    # Official, time-gated entries are independent of practice participation.
+    roster_audit = dict(confirmed=False, selected=None, warnings=entry_store.warnings,
+                        fallback='legacy competitive/practice assumption', identity_only=True)
     if args.roster:
         roster = pd.read_csv(args.roster, encoding="utf-8-sig")
-        if not {"driver", "team"}.issubset(roster.columns):
-            raise ValueError("Roster CSV needs driver,team columns (name is optional).")
+        if not {"driver", "team"}.issubset(roster.columns) or roster.driver.isna().any():
+            raise ValueError("Roster CSV needs identified driver,team columns (name is optional).")
         roster["driver"] = roster.driver.astype(str).str.strip().str.upper()
         roster["name"] = roster["name"] if "name" in roster else roster.driver
-        drivers = roster[["driver", "name", "team"]].to_dict("records")
+        for field in ["name", "team"]:
+            roster[field] = roster[field].map(lambda value:value.strip() if isinstance(value,str) else value)
+        drivers = grid_sources.validate_roster(roster[["driver", "name", "team"]].to_dict("records"))
         roster_source = str(args.roster)
+        roster_audit.update(confirmed=True, fallback=None, selected=dict(source='manual',
+            url=str(args.roster), sha256=hashlib.sha256(args.roster.read_bytes()).hexdigest(),
+            known_utc=now.isoformat(), timing='user-supplied roster asserted for this cutoff'))
     else:
-        drivers, roster_source = prediction_roster(current, allowed, usable_events, all_data)
+        fallback = None
+        try:
+            fallback, roster_source = prediction_roster(current, allowed, usable_events, all_data)
+        except ValueError:
+            if entry_record is None: raise
+        if entry_record:
+            catalogue = list(fallback or []) + [d for data in current.values() for d in data['drivers']]
+            drivers = grid_sources.entry_roster(entry_record, catalogue)
+            roster_source = 'dated FIA entry list: ' + entry_record['known_utc']
+            roster_audit.update(confirmed=True, selected=entry_record, fallback=None)
+            later = grid_sources.newer_competitive_roster(current, allowed, event, entry_record, now)
+            if later:
+                drivers = later['drivers']
+                roster_source = 'complete current '+later['session']+' roster supersedes older entry list'
+                roster_audit['warnings'].append('Completed competitive roster differs from the older FIA entry list; using the later complete session.')
+                roster_audit['selected'] = later
+        else:
+            drivers = fallback
+    grid_sources.validate_roster(drivers)
     names = [d["driver"] for d in drivers]
-    if len(drivers) < 3 or len(names) != len(set(names)) or any(not str(d.get("team", "")).strip() for d in drivers):
-        raise ValueError("Roster is incomplete or contains duplicate drivers.")
     print("Roster: " + roster_source)
-    practice_only = sorted({d["driver"] for code, data in current.items() if code.startswith("FP")
-                            for d in data["drivers"]} - set(names))
+    for warning in roster_audit['warnings']:
+        print('Roster warning: ' + warning)
+    practice_only = sorted({d['driver'] for code,data in current.items() if code.startswith('FP')
+                            for d in data['drivers']} - set(names))
+    roster_audit['practice_only_drivers'] = practice_only
     if practice_only:
-        print("Practice-only drivers outside the assumed entry list: " + ", ".join(practice_only)
-              + ". Use --roster for confirmed replacements.")
+        print('Practice-only drivers outside the entry list: ' + ', '.join(practice_only))
     inputs = pd.DataFrame([features(d, target, event, history, current, tracks,
         sprint_qualifying=sq_model, qualifying_front=front_model,
         sprint_specialist=sprint_active, race_specialist=race_active) for d in drivers])
@@ -1660,6 +1690,7 @@ def run(args):
                 "backtest_eligible_counts": {k: sum(bool(t.get(k)) for t in tests) for k in ('winner_eligible','top3_eligible','ranking_eligible')},
                 "uncertainty_basis": 'uncalibrated fixed assumption' if early else 'earlier chronological residuals; uncalibrated',
                 "used_sessions": list(current), "roster_source": roster_source,
+                "roster_selection": roster_audit,
                 "prediction_drivers": names, "practice_only_drivers": practice_only,
                 "weather": "diagnostic observations/scenarios only; not an active model input; no forecast API",
                 "manual_weather": {"air_temp": args.air_temp, "wet": args.wet},

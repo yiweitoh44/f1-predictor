@@ -1187,3 +1187,37 @@ and other-category benchmarks remain retained. Later Sprint forecasts are not
 guaranteed to improve. Base chronological terminal backtests and sigma estimation
 remain before this final adjustment and are labelled accordingly; do not describe
 the six-event saved-forecast result as a 6/6 rolling internal backtest.
+
+CONFIRMED ENTRANTS AND SUBSTITUTIONS
+-----------------------------------
+--roster remains the highest-priority user confirmation (driver,team; name optional).
+Automatic entries use a dated FIA main-entry list/revision for this exact event
+and season before the cutoff. FP1-only substitutes are excluded from that list.
+PDF issue time is cross-checked with FIA publication time. Paris summer/winter
+time is applied to FIA's CET-labelled catalogue; ambiguous clocks are rejected.
+A newer unresolved driver-change notice prevents trusting an older entry list.
+Conflicting same-time lists, unreadable tables, wrong events and late documents
+are rejected. A complete later competitive session can supersede an older list,
+provided its full drivers/results match and it finished before the cutoff.
+
+Missing/unusable confirmation retains the previous competitive/practice fallback
+with a warning. A practice list is still an assumption, not proof of registration.
+Use --roster for a confirmed replacement that automatic sources cannot verify.
+Offline runs reuse cached dated documents/immutable revisions where available;
+they cannot guarantee knowledge of announcements not previously downloaded.
+No future target driver list or post-target classification is queried to decide
+pre-session entrants. New downloads verify dated documents, not archived as-of
+availability of every source revision.
+
+The main driver TLA/name table supplies membership. Numeric footnotes can turn
+car3 into text31; lists with reserves/ambiguous numbers are not used to infer car
+identities. A clean verified mapping may fill a missing OpenF1 identity only if
+the car number is actually observed in that session. It never overwrites an
+existing provider identity or invents laps. Lap-quality/tyre/support rules stay
+unchanged. Unknown identities without proof remain unverified.
+
+Inspect run_info.json roster_source and roster_selection for the selected source,
+issue/publication/observation timestamps, PDF SHA256, declared entries/reserves,
+manual override hash, fallback and warnings. OpenF1 identity restoration is also
+recorded in source_warnings. Raw documents and immutable entrant revisions live
+under the external cache/entrants directory. No cache/data/tests are added to Git.

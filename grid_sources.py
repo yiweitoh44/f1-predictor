@@ -1,6 +1,6 @@
 """Published grids with source identity, time gates and explicit pit-lane status.
 
-Only grid documents are read: never the target race's results or running order.
+Grid and dated entrant documents are read; target results never select pre-session entrants.
 Raw responses and immutable grid snapshots live in the external data cache.
 """
 from __future__ import annotations
@@ -365,3 +365,193 @@ def apply_grid(inputs, drivers, record):
     inputs['start_grid_norm']=values
     inputs['start_pit_lane']=[mapping[d['driver']]['pit_lane'] for d in drivers]
     return inputs
+
+
+def validate_roster(rows):
+    """Validate entrant identities independently from finishing positions."""
+    if not isinstance(rows, list) or not 3 <= len(rows) <= 30:
+        raise ValueError('Roster needs between three and thirty identified drivers.')
+    codes = []
+    for row in rows:
+        for key in ['driver', 'name', 'team']:
+            if not isinstance(row.get(key), str) or not row[key].strip():
+                raise ValueError('Roster identities, names and teams must be nonempty text.')
+        if not re.fullmatch(r'[A-Z0-9]{2,4}', row['driver']):
+            raise ValueError('Roster driver codes must contain two to four uppercase letters/digits.')
+        codes.append(row['driver'])
+    if len(set(codes)) != len(codes):
+        raise ValueError('Roster contains duplicate drivers.')
+    return rows
+
+
+def parse_entry_pdf(blob, event, target, published):
+    """Read the main FIA entry table; FP1-only substitutes stay separate."""
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(blob))
+    if not 1 <= len(reader.pages) <= 6:
+        raise ValueError('Unexpected entry-list page count.')
+    text = '\n'.join(p.extract_text(extraction_mode='layout') or '' for p in reader.pages)
+    flat = ' '.join(text.split())
+    names = {event['EventName'], FIA_EVENT_NAMES.get(event['EventName'], event['EventName'])}
+    start = session_time(event, target)
+    if not any(normalized(n) in normalized(flat) for n in names) or str(start.year) not in flat:
+        raise ValueError('Entry-list event/season mismatch.')
+    if not re.search(r'No\.\s*TLA\s+Driver\s+Nat\s+Team', flat):
+        raise ValueError('Unrecognised FIA main-entry table.')
+    issued = re.search(r'Date\s+(\d{1,2} \w+ \d{4})\s+Time\s+(\d{2}:\s*\d{2})', flat)
+    if not issued:
+        raise ValueError('Entry-list issue time unavailable.')
+    local = session_time(event, target, local=True)
+    if local.tzinfo is None:
+        raise ValueError('Event timezone unavailable for entry-list issue time.')
+    issue = pd.to_datetime(issued[1]+' '+issued[2].replace(' ',''), format='%d %B %Y %H:%M').tz_localize(local.tzinfo).tz_convert('UTC')
+    published = utc(published)
+    if abs((published-issue).total_seconds()) > 7200 or abs((issue-start).total_seconds()) > 7*86400:
+        raise ValueError('Entry-list issue/publication/weekend dates disagree.')
+    sections = re.split(r'In addition to the list of cars and drivers', text, flags=re.I, maxsplit=1)
+    pattern = r'^\s*(\d{1,5})\s+([A-Z]{3})\s+(.+?)\s+([A-Z]{3})\s+(.+?)\s{2,}([^\n]+)$'
+    def rows(section):
+        parsed = re.findall(pattern, section, re.M)
+        candidates = re.findall(r'^\s*\d{1,5}\s+[A-Z]{3}\s+', section, re.M)
+        if len(parsed) != len(candidates):
+            raise ValueError('Entry table contains unreadable driver rows.')
+        return [dict(driver=code, name=name.strip(), team=team.strip(), official_team=team.strip(),
+                     # Superscript footnotes concatenate with numbers in some PDFs.
+                     # Those numbers are deliberately not guessed or used for lap identities.
+                     number=int(number) if 0 < int(number) < 100 else None)
+                for number, code, name, nationality, team, constructor in parsed]
+    main = validate_roster(rows(sections[0]))
+    reserves = []
+    if len(sections) > 1:
+        # Reserve rows can collapse the team/constructor column boundary. Match
+        # their team against this document's main table, never race entrants.
+        teams = {r['team'] for r in main}
+        for number,code,name,nationality,rest in re.findall(
+                r'^\s*(\d{1,5})\s+([A-Z]{3})\s+(.+?)\s+([A-Z]{3})\s+([^\n]+)$', sections[1], re.M):
+            matches = [t for t in teams if normalized(rest).startswith(normalized(t))]
+            reserves.append(dict(driver=code,name=name.strip(),team=matches[0] if len(matches)==1 else rest.strip(),number=None))
+    numbers = [r['number'] for r in main]
+    if len(sections)>1 or None in numbers or len(set(numbers))!=len(numbers):
+        # Footnote superscripts may look like valid two-digit car numbers too.
+        # Keep entrant names, but use no inferred number mapping for such lists.
+        for row in main:row['number']=None
+    return main, reserves, max(issue, published)
+
+
+class EntryStore(GridStore):
+    """Dated FIA entrants with immutable revisions and honest offline fallback."""
+    def __init__(self, root, offline=False, refresh=False):
+        super().__init__(root, offline, refresh)
+        self.root = Path(root)/'entrants'
+        self.warnings = []
+
+    def resolve(self, year, event, target, cutoff):
+        cutoff = utc(cutoff)
+        root = 'https://www.fia.com'
+        observed_catalogue = False
+        try:
+            page, _ = self.page(root+'/documents')
+            seasons = [v for v,l in page.options if normalized(l)==f'season{year}']
+            if len(seasons) != 1: raise ValueError('FIA entrant season unavailable.')
+            page, _ = self.page(urljoin(root, seasons[0]))
+            name = FIA_EVENT_NAMES.get(event['EventName'], event['EventName'])
+            events = [v for v,l in page.options if normalized(l)==normalized(name)]
+            if len(events) != 1: raise ValueError('FIA entrant event unavailable.')
+            page, _ = self.page(urljoin(root, events[0]))
+            observed_catalogue = True
+            eligible = []
+            for doc in page.documents:
+                text = ' '.join(doc['text'].split())
+                if 'recalled' in text.lower(): continue
+                if 'entry list' in text.lower() and ('fp1' in text.lower() or 'free practice' in text.lower()): continue
+                if not any(w in text.lower() for w in ['entry list','driver change','change of driver','withdrawal']): continue
+                match = re.search(r'Published on (\d{2}\.\d{2}\.\d{2} \d{2}:\d{2})',text)
+                if not match: raise ValueError('Entrant notice lacks a publication timestamp.')
+                published = pd.to_datetime(match[1], format='%d.%m.%y %H:%M').tz_localize('Europe/Paris', ambiguous='NaT', nonexistent='NaT').tz_convert('UTC')
+                if pd.isna(published): raise ValueError('Ambiguous entrant publication clock time.')
+                if published <= cutoff: eligible.append((published, text, doc.get('url')))
+            if eligible:
+                newest = max(x[0] for x in eligible)
+                tied = {x[2] for x in eligible if x[0] == newest and 'entry list' in x[1].lower()}
+                if len(tied) > 1: raise ValueError('Conflicting entry lists have the same publication time.')
+            for published, text, path in sorted(eligible, key=lambda v:(v[0], v[1]), reverse=True):
+                if 'entry list' not in text.lower():
+                    raise ValueError('A newer driver-change/withdrawal notice needs a readable revised entry list or manual roster.')
+                if not path: raise ValueError('Entry-list link unavailable.')
+                url = urljoin(root, path)
+                blob, observed = self.get(url)
+                drivers, reserves, known = parse_entry_pdf(blob,event,target,published)
+                if known > cutoff: raise ValueError('Entry list was issued after the prediction cutoff.')
+                record = dict(schema=1,source='fia',year=int(year),round=int(event['RoundNumber']),
+                    event=event['EventName'],drivers=drivers,reserves=reserves,url=url,
+                    known_utc=known.isoformat(),observed_utc=observed.isoformat(),
+                    sha256=hashlib.sha256(blob).hexdigest(),title=text.split('Published on')[0])
+                digest=hashlib.sha256(json.dumps(record,sort_keys=True).encode()).hexdigest()
+                save_json(self.root/'snapshots'/f'{year}-{int(event["RoundNumber"])}'/f'{digest}.json',record)
+                return record
+            raise ValueError('No eligible dated FIA entry list before the cutoff.')
+        except (ValueError, KeyError, TypeError, OSError, requests.RequestException, PyPdfError) as exc:
+            self.warnings.append('Confirmed entry list unavailable: '+str(exc))
+            # Catalogues can be unavailable offline. Only reuse identity-checked,
+            # hash-verified saved revisions; never blindly use a current-season list.
+            if observed_catalogue: return None
+            records=[]
+            for path in (self.root/'snapshots'/f'{year}-{int(event["RoundNumber"])}').glob('*.json'):
+                try:
+                    row=json.loads(path.read_text())
+                    if path.stem != hashlib.sha256(json.dumps(row,sort_keys=True).encode()).hexdigest(): continue
+                    if row.get('schema')!=1: continue
+                    if row['year']!=int(year) or row['event']!=event['EventName'] or row['round']!=int(event['RoundNumber']): continue
+                    if utc(row['known_utc'])>cutoff: continue
+                    validate_roster(row['drivers']);records.append(row)
+                except (ValueError,KeyError,TypeError,OSError): continue
+            return max(records,key=lambda r:utc(r['known_utc'])) if records else None
+
+
+def entry_roster(record, catalogue):
+    """Map official team names to unambiguous known canonical identities."""
+    known = {d['driver']:d for d in catalogue}
+    teams = {d['team'] for d in catalogue if d.get('identity_source') != 'fia_entry'}
+    team_map = {}
+    for d in record['drivers']:
+        matching = {t for t in teams if len(normalized(t)) >= 3 and
+                    (normalized(t) in normalized(d['official_team']) or
+                     normalized(d['official_team']) in normalized(t))}
+        team_map[d['official_team']] = matching
+    result=[]
+    for d in record['drivers']:
+        teams=team_map.get(d['official_team'],set())
+        if len(teams)>1:
+            # A transferred driver must not drag the old team's identity along.
+            # Match the official team name where possible; otherwise keep its name.
+            matching={t for t in teams if normalized(t) in normalized(d['official_team']) or normalized(d['official_team']) in normalized(t)}
+            teams=matching
+        team=next(iter(teams)) if len(teams)==1 else d['official_team']
+        previous=known.get(d['driver'])
+        name=previous.get('name',d['name']) if previous and normalized(previous.get('name'))==normalized(d['name']) else d['name']
+        result.append(dict(driver=d['driver'],name=name,team=team))
+    order = {}
+    for d in catalogue:
+        order.setdefault(d['driver'],len(order))
+    # Preserve existing draw-to-driver order when the confirmed membership is
+    # unchanged; a source confirmation should not itself reshuffle sampled shares.
+    result.sort(key=lambda d:order.get(d['driver'],len(order)))
+    return validate_roster(result)
+
+
+def newer_competitive_roster(current, allowed, event, entry_record, cutoff):
+    """A complete later competitive session can supersede an older entry list."""
+    for code in reversed(allowed):
+        data = current.get(code)
+        if code not in {'Q','SQ','S','R'} or not data or not data.get('competitive_roster_complete'):
+            continue
+        observed = event.get(code+'_openf1')
+        end = pd.Timestamp(observed.get('date_end')) if isinstance(observed,dict) else pd.NaT
+        if (pd.notna(end) and end.tzinfo is not None and utc(entry_record['known_utc']) < end <= cutoff
+                and len(data['drivers']) >= len(entry_record['drivers'])
+                and {d['driver'] for d in data['drivers']} != {d['driver'] for d in entry_record['drivers']}):
+            drivers = validate_roster(data['drivers'])
+            return dict(source='completed_competitive_session',session=code,known_utc=end.isoformat(),
+                        older_entry_document=entry_record,drivers=drivers)
+        break
+    return None
