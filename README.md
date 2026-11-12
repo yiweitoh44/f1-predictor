@@ -227,3 +227,30 @@ classifications agree on their published numeric positions. They do not supply
 additional complete Sprint/SQ numeric fields: NC/DNS/DQ entries are not assigned
 invented positions. The retained benchmark still has one complete Sprint field
 and two complete SQ fields. See START_HERE for scoring commands and limits.
+
+## Simulation uncertainty
+
+Mean positions are now calculated directly from the selected probability model.
+Random draws still provide winner/top-three shares and close-call percentages,
+but cannot shuffle a close predicted order just because of sampling noise.
+
+Trained GP/Sprint forecasts use independent Gumbel score noise at the same
+estimated standard deviation; qualifying/SQ and early-season fallback keep
+Gaussian noise. The race-family change improves winner probability scoring on
+both the earlier and later GP checks. Percentages remain experimental model
+shares, with no claim of calibrated real-world chances.
+
+On the same retained 50-event benchmark, qualifying poles improve **11/19 → 12/19**
+and qualifying ranking error improves **1.943 → 1.932**. Suzuka's close pole pick
+changes from Russell to the correct Antonelli. This comes from consistent
+numerical integration; model training and evidence weights are unchanged.
+GP **16/19**, Sprint **5/6** and SQ **3/6** remain unchanged, as do their total
+podium matches and ranking errors. Original Mexico forecasts remain preserved.
+
+The expanded review included native-model block ensembles, learned error scales,
+driver covariance, Bayesian and Gaussian-process models, conformal/quantile
+intervals, PIT/multiclass calibration, exact likelihoods and variance reduction.
+A research Sprint residual-calibration candidate reaches **6/6**, but changes
+Singapore podium matches from **3/3 to 2/3**, with little independent validation.
+It is not installed in the default predictor. See START_HERE for that trade-off,
+research sources, coverage limits and the uncertainty metadata.

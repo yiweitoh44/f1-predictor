@@ -1029,3 +1029,132 @@ the corrected reports. No tests/cache/results/research reports are added to Git.
 
 This completes item 5's scoring/coverage review. Final release-wide verification
 will run after the remaining agreed items 6–10; no release is created here.
+
+
+SIMULATION UNCERTAINTY — FINAL-SCOPE ITEM 6, EXPANDED REVIEW
+
+This expanded review supersedes the initial retained-policy conclusion. The
+broader literature/reasoning review found limitations in the old experiment:
+finite simulation ordering jitter was sometimes used to reject probability laws,
+and sampled likelihood floors could hide the severity of rare wrong predictions.
+The review now separates numerical integration from the probability model.
+
+WHAT IS ACTIVE
+1. Exact mean positions. For any driver, expected rank is one plus the sum of
+   probabilities that each other driver finishes ahead. Those pair probabilities
+   have direct formulas for the supported noise laws. No extra package is needed.
+   Changing --simulations cannot shuffle the predicted order. Winner/top-three
+   shares and close-call estimates still come from the same coherent joint draws.
+   Very close sampled shares can fluctuate around the fixed expected order.
+2. Trained Race/Sprint forecasts use Gumbel score noise, with scale sigma*sqrt(6)/pi
+   so its standard deviation matches the existing error-based sigma. No new
+   fitting weight or driver-specific rule is added. Q/SQ and fixed early-season
+   fallback retain Gaussian noise. Sigma remains the latest-four-window base
+   residual standard deviation, floor .03; early sigma remains .20.
+3. run_info.json/simulation_uncertainty records the law, scale, mean-position
+   basis, estimation provenance, residual row/weekend counts/rounds, pooling,
+   label policy, seed and sampling precision. A row is not an independent weekend.
+   Derived retirement labels keep their existing training policy; item 5's
+   published-position scoring remains unchanged.
+4. Invalid simulation inputs fail clearly. Below 5,000 draws the terminal notes
+   greater variation in shares/close-call estimates. The main table format and
+   CLI count limits (100 to 1,000,000) remain unchanged. Zero-noise internal
+   scenarios remain supported. Forecast samplers keep positive spread.
+
+MEAN POSITION AND PERCENTAGES
+Mean position is the analytic expectation under the selected score-noise model,
+not a finite-sample average. Pole/first/top-three shares and close-call percentages
+remain sampled fractions. At 25,000 draws the worst-case single-share Monte Carlo
+standard error is .3162 percentage points. This measures counting precision under
+this assumed model, NOT real-world forecast error or calibrated winning chance.
+Increasing the draw count does not remove model/source uncertainty. Exact means
+remove the numerical ordering fluctuation directly; antithetic/Sobol samplers
+were also tested, but are not needed for exact mean positions.
+
+RESULTS, SAME RETAINED BENCHMARK
+  GP:     16/19 winners; 37/57 podium identities; 3.3158 places out / 19 fields.
+  Q:      11/19 -> 12/19 poles; 30/57 top-three identities retained;
+          1.9432 -> 1.9318 places out / 16 complete fields.
+  Sprint:  5/6 winners; 14/18 podium identities; 1.0000 / ONE complete field.
+  SQ:      3/6 poles; 10/18 top-three identities; 1.7727 / TWO fields.
+The close Suzuka pole order becomes Antonelli/Russell rather than Russell/
+Antonelli. Model scores/training are unchanged; this is a numerical integration
+improvement, not new predictive evidence. The same correction applies to its
+saved after-FP2 control. Original Mexico Q/R forecasts are not overwritten.
+
+RACE PERCENTAGE CHECKS
+The shared trained-race-family law improves exact winner log-loss and Brier
+scores in both comparison periods. Lower scores are better:
+  12 earlier GPs: log-loss 1.3487 -> 1.1713; Brier .6385 -> .5765.
+   6 later GPs:   log-loss 1.5961 -> 1.5614; Brier .6661 -> .5974.
+Early forecasts retain Gaussian noise, so these changes come from trained cases.
+For Sprint: five earlier events improve log-loss 1.0187 -> .9341; the single
+later event improves .7558 -> .5662. That one later Sprint is limited evidence.
+An earlier-event-only selection check independently chooses the same law once
+four prior weekends exist. No current target results are fitted. The cases and
+models have been extensively inspected; this is not prospective calibration.
+A descriptive event-bootstrap interval for the GP gain overlaps zero. Do not
+turn these historical gains into a guarantee for the next weekend.
+
+EXPANDED METHODS AND RESEARCH
+Beyond the original 96-setting review, the expanded work evaluates 160 study
+configurations (including numerical controls and interval methods), 600 exact
+winner-likelihood checks and 1,500 integration/seed comparisons. It includes:
+  - analytic expected ranks and adaptive numerical winner probabilities;
+    antithetic and scrambled-Sobol integration;
+  - five-model calendar-block ensembles of the full native predictor, including
+    active specialists; 400 unique model/control fits;
+  - learned heteroscedastic errors, shrunk driver covariance, hierarchical
+    posterior predictive spread, and Gaussian-process mean/covariance models;
+  - event-block conformal and conformalized quantile intervals, assessed with
+    coverage, width and interval score rather than winner-only metrics;
+  - CDF/PIT, regularized multiclass and stage-conditional calibration;
+  - pooled earlier GP/Sprint residual calibration, with numerical point order
+    separated from genuine model changes, and earlier-event-only comparisons.
+All past-session gap features are calculated within their own session. The audit
+corrected a study-only grouping mismatch and reran affected experiments; those
+pre-audit trials are excluded from final selection. Past raw/model inputs and
+native feature matrices are preserved. No future labels enter calibration.
+
+Representative primary sources:
+  Gneiting/Raftery, proper scoring rules:
+    https://sites.stat.washington.edu/raftery/Research/PDF/Gneiting2007jasa.pdf
+  Kuleshov et al., regression calibration: https://arxiv.org/abs/1807.00263
+  Lakshminarayanan et al., ensemble uncertainty: https://arxiv.org/abs/1612.01474
+  Angelopoulos/Bates, conformal prediction: https://arxiv.org/abs/2107.07511
+  Romano et al., conformal quantile regression: https://arxiv.org/abs/1905.03222
+  Kull et al., multiclass calibration: https://arxiv.org/abs/1910.12656
+The ideas were adapted to the existing native-model pipeline; this does not
+claim a neural network was installed or every published algorithm was exhausted.
+
+IMPORTANT ALTERNATIVES AND LIMITS
+A Gaussian-process residual-calibration trial reaches 6/6 Sprint winners and
+.9091 places out on the single complete field, retaining 14/18 podium identities.
+The improvement includes Zandvoort's winner. However, Singapore's podium matches
+fall 3/3 -> 2/3, offsetting an earlier podium gain. Only three Sprint events use
+the pooled calibration, and only one supplies a complete ranking. Its pure
+Sprint-history version affects just two events with no complete active field.
+Source-to-candidate checks and five seeds reproduce the trial. A further 30
+bias/covariance/noise-law combinations did not remove the later podium trade-off
+while retaining the extra winner. It remains a
+research alternative rather than the default: this is a real validation trade-off,
+not a claim that the method failed or could not be implemented. No field accuracy
+or calibrated certainty is claimed from six selected events.
+
+Some covariance/GP/ensemble settings improve individual measures while hurting
+other formats/periods. Conformal intervals often become very wide or the full
+bounded position set because there are too few independent calibration weekends.
+Their usual guarantees require assumptions that are not established for this
+changing, dependent dataset. More compute cannot establish those missing facts.
+
+VERIFICATION
+344 external checks: 340 pass, four FastF1-only skips. All 63 frozen full-command
+replays match independently computed expected means and sampled shares, retaining
+native scores/input matrices, sigmas, source URL/hash sets and cutoffs. Existing
+backtest/comparison tables retain the score-based item-5 results. Six additional
+Sprint source-to-candidate runs reproduce the research calibration at five seeds.
+Original forecasts/old dated hashes remain intact; a new dated backup records
+current default outputs. Research, PDFs, tests, cache and results stay outside Git.
+Remaining agreed items are 7–10. This does not prove no future method can improve
+these results; every identified implementable method in this review has a
+recorded outcome, including the rejected and data-limited alternatives.

@@ -894,7 +894,14 @@ def train_and_check(frame, target_code, comparison_rows=None, qualifying_practic
     if target_code in RACE_TYPES:
         print("Recovery backtests use bounded evidence adjustments; simulation spread retains base-model errors.")
     sigma = max(float(np.std(residuals, ddof=1)), 0.03)
-    return fit(frame, columns), columns, sigma, details
+    model = fit(frame, columns)
+    model.uncertainty_report = dict(basis='earlier base-model out-of-fold residual standard deviation',
+        residual_rows=len(residuals), residual_weekends=len(uncertainty_rounds),
+        residual_rounds=sorted(int(r) for r in uncertainty_rounds),
+        requested_session_rows=len(exact), pooled=len(exact) < 20,
+        labels='existing normalized finishing-order labels, including derived retirement orders',
+        floor=.03, calibrated=False)
+    return model, columns, sigma, details
 
 
 def early_season_model(inputs):
@@ -905,6 +912,9 @@ def early_season_model(inputs):
                          'Wait for practice/qualifying or provide a verified roster if needed.')
 
     class EvidenceModel:
+        uncertainty_report = dict(basis='fixed early-season assumption; no measured residuals',
+            residual_rows=0, residual_weekends=0, residual_rounds=[],
+            requested_session_rows=0, pooled=False, calibrated=False)
         def predict(self, data):
             return data['influence_anchor'].to_numpy(dtype=float)
 
@@ -919,15 +929,64 @@ def early_season_model(inputs):
     return EvidenceModel(), ['influence_anchor'], EARLY_SEASON_SIGMA, []
 
 
-def simulate(scores, sigma, count, return_positions=False):
+def simulation_uncertainty(sigma, count, estimation=None, noise='normal'):
+    """Sampling precision is not the error of the real-world prediction."""
+    if (isinstance(count, (bool, np.bool_)) or not isinstance(count, (int, np.integer)) or count < 1
+            or isinstance(sigma, (bool, np.bool_))
+            or not isinstance(sigma, (int, float, np.integer, np.floating))
+            or not np.isfinite(sigma) or sigma < 0):
+        raise ValueError('Simulation requires a nonnegative finite spread and positive integer count.')
+    if noise not in {'normal', 'gumbel'}:
+        raise ValueError('Unknown simulation noise law.')
+    return dict(noise='independent Gaussian score noise' if noise == 'normal' else 'independent Gumbel score noise',
+        noise_law=noise, sigma=float(sigma), gumbel_scale=float(sigma*np.sqrt(6)/np.pi) if noise == 'gumbel' else None,
+        mean_position_basis='analytic expectation under the same score-noise law; no Monte Carlo ordering jitter',
+        simulations=int(count), seed=42, calibrated=False,
+        estimation=estimation or dict(basis='caller-provided spread assumption', calibrated=False),
+        maximum_share_sampling_standard_error_pp=float(50/np.sqrt(count)),
+        sampling_error_scope='Monte Carlo precision of a share under this assumed model; not real-world forecast error',
+        small_sample_warning=bool(count < 5000))
+
+
+def expected_positions(scores, sigma, noise='normal'):
+    """Exact expected ranks for supported iid noise; shares still use draws.
+
+    E[rank_i] = 1 + sum(P(j finishes ahead of i)). Pair differences are
+    Gaussian with SD sqrt(2)*sigma, or logistic with Gumbel scale beta.
+    """
+    from math import erf
+    simulation_uncertainty(sigma, 1, noise=noise)
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 1 or not len(scores) or not np.isfinite(scores).all():
+        raise ValueError('Simulation needs a nonempty one-dimensional array of finite scores.')
+    difference = scores[:, None] - scores[None, :]
+    if sigma == 0:
+        # Degenerate internal scenario: use exactly the deterministic tie
+        # ordering produced by the zero-noise draws, rather than a limit as
+        # positive noise approaches zero.
+        result = np.empty(len(scores), dtype=float)
+        result[np.argsort(scores)] = np.arange(1, len(scores)+1)
+        return result
+    elif noise == 'normal':
+        pair = .5 + .5*np.fromiter((erf(v) for v in (difference/(2*sigma)).ravel()),
+                                   dtype=float, count=difference.size).reshape(difference.shape)
+    else:
+        beta = sigma*np.sqrt(6)/np.pi
+        pair = 1/(1+np.exp(np.clip(-difference/beta, -700, 700)))
+    return .5 + pair.sum(axis=1)  # remove self-comparison .5, add initial rank 1
+
+
+def simulate(scores, sigma, count, return_positions=False, noise='normal'):
+    simulation_uncertainty(sigma, count, noise=noise)
+    scores = np.asarray(scores, dtype=float)
+    average = expected_positions(scores, sigma, noise)
     rng = np.random.default_rng(42)
-    ranks = np.argsort(scores[None, :] + rng.normal(0, sigma, (count, len(scores))), axis=1)
+    perturbations = (rng.normal(0, sigma, (count, len(scores))) if noise == 'normal' else
+                     rng.gumbel(0, sigma*np.sqrt(6)/np.pi, (count, len(scores))))
+    ranks = np.argsort(scores[None, :] + perturbations, axis=1)
     win = np.bincount(ranks[:, 0], minlength=len(scores)) * 100 / count
     top3 = np.bincount(ranks[:, :min(3, len(scores))].ravel(), minlength=len(scores)) * 100 / count
-    order_sum = np.zeros(len(scores))
-    for place in range(len(scores)):
-        order_sum += np.bincount(ranks[:, place], minlength=len(scores)) * (place + 1)
-    result = (win, top3, order_sum / count)
+    result = (win, top3, average)
     if return_positions:
         positions = np.empty(ranks.shape, dtype=np.int32)
         np.put_along_axis(positions, ranks, np.arange(1, len(scores)+1)[None, :], axis=1)
@@ -936,7 +995,7 @@ def simulate(scores, sigma, count, return_positions=False):
 
 
 def prediction_tables(drivers, scores, win, top3, average, positions, target):
-    """Display by mean position; pairwise percentages use the very same draws."""
+    """Display by expected position; shares and close calls use the same draws."""
     names = np.asarray([d['driver'] for d in drivers])
     order = np.lexsort((names, scores, average))
     short_names = [str(d.get('name', d['driver'])).split()[-1] for d in drivers]
@@ -1331,7 +1390,13 @@ def run(args):
         inputs['recovery_score_change'] = scores - base_scores
         print(f"Recovery: bounded evidence adjustment for {int(np.sum(scores != base_scores))}/{len(scores)} drivers; "
               'requires an independently known grid; confirmed pit starters excluded.')
-    win, top3, average, positions = simulate(scores, sigma, args.simulations, return_positions=True)
+    # Keep the original fixed early-season assumption. The race-family law is
+    # supported by earlier-event-only comparisons once a native model is fitted.
+    noise = 'gumbel' if target in RACE_TYPES and not early else 'normal'
+    win, top3, average, positions = simulate(scores, sigma, args.simulations, return_positions=True, noise=noise)
+    uncertainty = simulation_uncertainty(sigma, args.simulations, getattr(model, 'uncertainty_report', None), noise=noise)
+    if uncertainty['small_sample_warning']:
+        print('Low simulation count: shares and close-call estimates can vary more with sampling; this does not measure real-world accuracy.')
     output, simulation_details = prediction_tables(drivers, scores, win, top3, average, positions, target)
     folder = OUTPUT_ROOT / f"{args.year}_{int(event['RoundNumber']):02d}_{args.session}" / "latest"
     folder.mkdir(parents=True, exist_ok=True)
@@ -1454,6 +1519,7 @@ def run(args):
                 "grid_source": grid_record['source'] if grid_record else "qualifying order when available",
                 "grid_details": grid_audit,
                 "sigma_normalized_positions": sigma, "simulations": args.simulations,
+                "simulation_uncertainty": uncertainty,
                 "backtest_maximum_weekends": BACKTEST_WEEKENDS,
                 "validation_comparison": {
                     "common_rounds": comparison_summary(comparisons, target)[0],
@@ -1461,12 +1527,12 @@ def run(args):
                     "model_order": "score order (expected mean-position order under shared simulation noise)",
                     "grid_basis": "historical OpenF1 grid when qualifying is available; current published revisions; no qualifying fallback for a missing benchmark grid",
                     "missing_baseline": "exclude the weekend from every method in the comparison table; retain full model backtest report",
-                    "ties": "mean ranks for ranking error; driver code breaks tied first/podium picks"},
+                    "ties": "integer published-position scoring; driver code breaks tied score order"},
                 "output_policy": {
-                    "order": "mean simulated position, then model score, then driver code",
+                    "order": "analytic expected position under selected iid noise law, then model score, then driver code",
                     "close_call_ahead_pct_range": [CLOSE_CALL_MIN_PCT, CLOSE_CALL_MAX_PCT],
                     "close_call": "Race/Sprint lower row only; fraction of the same simulations where this driver finishes ahead of the adjacent driver above",
-                    "simulation_details": "unchanged first/top-three shares, scores, means and adjacent comparisons saved separately"},
+                    "simulation_details": "sampled first/top-three shares, model scores, analytic means and sampled adjacent comparisons saved separately"},
                 "uncertainty_maximum_weekends": UNCERTAINTY_WEEKENDS,
                 "model_features": columns,
                 "qualifying_practice_diagnostics": influence.qualifying_diagnostic_policy(
@@ -1510,7 +1576,7 @@ def run(args):
     openf1_data.save(folder / 'source_manifest.json', source_manifest)
     metadata['source_manifest'] = 'source_manifest.json'
     (folder / "run_info.json").write_text(json.dumps(json_safe(metadata), indent=2), encoding="utf-8")
-    print("\nPrediction ordered by mean simulated position. Shares are experimental, not calibrated probabilities.")
+    print("\nPrediction ordered by expected mean position. Shares are experimental, not calibrated probabilities.")
     if target in RACE_TYPES:
         print('Close calls: the named row driver beats the driver above in 45–55% of simulations.')
     print_prediction_table(output)
