@@ -411,8 +411,9 @@ def parse_entry_pdf(blob, event, target, published):
     sections = re.split(r'In addition to the list of cars and drivers', text, flags=re.I, maxsplit=1)
     pattern = r'^\s*(\d{1,5})\s+([A-Z]{3})\s+(.+?)\s+([A-Z]{3})\s+(.+?)\s{2,}([^\n]+)$'
     def rows(section):
-        parsed = re.findall(pattern, section, re.M)
-        candidates = re.findall(r'^\s*\d{1,5}\s+[A-Z]{3}\s+', section, re.M)
+        body = re.split(r'No\.\s*TLA\s+Driver\s+Nat\s+Team[^\n]*',section,maxsplit=1)[-1]
+        parsed = re.findall(pattern, body, re.M)
+        candidates = re.findall(r'^\s*\d{1,5}\s+\S+', body, re.M)
         if len(parsed) != len(candidates):
             raise ValueError('Entry table contains unreadable driver rows.')
         return [dict(driver=code, name=name.strip(), team=team.strip(), official_team=team.strip(),
