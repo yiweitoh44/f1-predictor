@@ -1288,6 +1288,8 @@ def explain_driver(folder, driver):
         if not np.isfinite(w):w=0.
         available=np.isfinite(val(raw)) if raw else any(np.isfinite(val(family+'_'+k)) for k in ['driver_form','team_form','related_circuit_form'])
         status=('used' if available else 'neutral history fallback') if w>0 else ('available; zero explicit weight' if available else 'missing; zero explicit weight')
+        if raw is None and w>0 and not available and not all(family+'_'+k in row for k in ['driver_form','team_form','related_circuit_form']):
+            status='used; underlying history details unavailable'
         evidence.append(dict(source=label,weight=float(w),score=val(value) if w>0 else None,status=status))
     steps=[];anchor=val('influence_anchor');alpha=number(info.get('active_learned_share'))
     if not np.isfinite(alpha):alpha=number(json.loads(saved['influence_policy.json']).get('learned_adjustment_share'))
