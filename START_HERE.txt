@@ -1255,7 +1255,8 @@ New runs save driver_evidence.json and freeze/hash it. Old snapshots do not borr
 mutable latest diagnostics; absent detailed evidence is reported unavailable.
 The base native model is evaluated from its saved parameters/inputs, not retrained.
 Its blend is reconciled through recorded final adjustments to simulation_details.
-The machine-readable report also retains actual native input values/missingness.
+Selected native model inputs are listed in run_info.json/model_features and
+recorded in prediction_inputs.csv; missing values remain empty.
 Tree attributions were reviewed for the native component; they cannot by themselves
 explain final reorder/GP operations or prove causes. No cause-of-retirement,
 fuel/engine programme or hypothetical traffic story is invented. Shares remain
