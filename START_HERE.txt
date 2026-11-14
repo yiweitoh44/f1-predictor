@@ -1285,3 +1285,28 @@ Tree attributions were reviewed for the native component; they cannot by themsel
 explain final reorder/GP operations or prove causes. No cause-of-retirement,
 fuel/engine programme or hypothetical traffic story is invented. Shares remain
 experimental. Normal predictions, training and the main table are unchanged.
+
+ITEM 1 — ASTRA EXPANDED PRACTICE REVIEW (15 NOVEMBER 2026)
+Current practice inputs, support gates, weights and pole specialist are retained.
+The review revisited previous studies and tested additional regularized linear,
+robust residual, nonnegative mixture, kernel and native-XGBoost residual models.
+Inputs included observed session agreement, history disagreement, admitted lap
+support, peer coverage and missingness; no fuel/engine settings were invented.
+Q-only versus pooled history, correction strength, preserving the predicted top
+five, earlier-weekend selection and tied-model aggregation were checked.
+Explicit stage masking reproduced the original pipeline's stage-aware evidence.
+
+The study covers 19 Q forecasts and 12 after-FP2 stages. It records 712 settings
+including baseline, stage-parity and inactive controls, totaling 22,072 scored
+case-settings; these are not independent races or 712 unrelated algorithms.
+Each fit uses earlier weekends only. Discovery1-12 and later13-18 are evaluated
+separately; Mexico is diagnostic. Original saved forecasts are preserved.
+
+Main qualifying benchmark stays12/19 poles,30/57 podium drivers and1.9318 mean
+places out over16 complete fields. The best passing adaptive follow-up leaves
+these unchanged and improves after-FP2 podium drivers16/36->18/36 and error
+2.2364->2.1636 over10 complete fields; poles remain4/12. Gains occur in two later
+stages (Sepang and Austin), with no earlier evaluation gain. This limited,
+extensively inspected evidence does not justify adding the adaptive selection
+system. It is recorded as a promising retrospective result, not called worse or
+impossible. Race/Sprint/SQ scoring is unchanged. No new command or dependency.

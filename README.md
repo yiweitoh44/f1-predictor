@@ -339,3 +339,14 @@ viewer verifies its hashes and reads only that saved evidence. Older copies can
 show their score trace while reporting detailed lap exclusions as unavailable.
 New copies include a hashed `driver_evidence.json`. Missing evidence stays unknown;
 zero explicit weight does not mean a feature is unused by every model component.
+
+## Qualifying practice review
+
+The November 2026 Astra review retained the current practice inputs and pole
+model. Additional regularized, robust, nonlinear and learned-reliability
+corrections, plus selection using earlier weekends, were compared across the
+same 19 qualifying forecasts and 12 after-FP2 stages. The strongest passing
+adaptive follow-up improved two after-FP2 podium comparisons, but did not improve
+pole picks or the main 19-event results. Its gains appeared only in the later
+sample, so the additional selection system was not adopted. These repeatedly
+inspected historical cases do not establish future accuracy.
