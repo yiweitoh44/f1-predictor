@@ -310,3 +310,24 @@ practice-only names are recorded in `run_info.json` under `roster_selection`.
 These are roster/data corrections, with no changes to model weights. Historical
 forecasts remain experimental; newly scoreable full fields are reported separately
 from comparisons on the previously eligible fields.
+
+### Optional driver explanations
+
+Append `--explain VER` to a prediction command to inspect one driver; repeat it
+for more drivers or use `--explain all`. The normal prediction table stays the
+same. The extra view shows the grid separately from qualifying performance,
+explicit evidence weights, earlier form, the learned score change, specialist
+selection, recovery and Sprint adjustments, plus admitted practice comparisons
+and recorded lap exclusions. Scores are not finishing places or causal effects.
+
+You can inspect a saved forecast without downloads, fitting or another prediction:
+
+```powershell
+python predict_anytime.py --explain-forecast "C:\path\to\forecasts\saved-copy" --explain VER
+```
+
+Use the immutable forecast-copy path printed by the prediction command. The
+viewer verifies its hashes and reads only that saved evidence. Older copies can
+show their score trace while reporting detailed lap exclusions as unavailable.
+New copies include a hashed `driver_evidence.json`. Missing evidence stays unknown;
+zero explicit weight does not mean a feature is unused by every model component.
