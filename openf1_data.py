@@ -361,10 +361,145 @@ def confirmed_driver_identities(drivers, observed_numbers, record, session):
   added.append(row['driver'])
  return list(existing.values()),added
 
+# Processed summaries are derived artifacts, never a replacement for raw freshness checks.
+PROCESSED_SCHEMA=1
+
+def cache_encode(value):
+ if isinstance(value,dict):return {str(k):cache_encode(v) for k,v in value.items()}
+ if isinstance(value,(list,tuple)):return [cache_encode(v) for v in value]
+ if isinstance(value,(pd.Timestamp,pd.Timedelta)):return {'__cache_time__':value.isoformat(),'kind':type(value).__name__}
+ if isinstance(value,Path):return str(value)
+ if isinstance(value,np.generic):return cache_encode(value.item())
+ if isinstance(value,float) and not np.isfinite(value):return {'__cache_float__':str(value)}
+ if value is None or isinstance(value,(str,int,float,bool)):return value
+ raise TypeError('Unsupported processed-cache value: '+type(value).__name__)
+
+def cache_decode(value):
+ if isinstance(value,list):return [cache_decode(v) for v in value]
+ if isinstance(value,dict):
+  if set(value)=={'__cache_float__'}:return float(value['__cache_float__'])
+  if set(value)=={'__cache_time__','kind'}:return (pd.Timestamp if value['kind']=='Timestamp' else pd.Timedelta)(value['__cache_time__'])
+  return {k:cache_decode(v) for k,v in value.items()}
+ return value
+
+def cache_digest(value):
+ return hashlib.sha256(json.dumps(cache_encode(value),sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+
+def processing_signature(pace_function):
+ import inspect,sys
+ if not hasattr(pace_function,'__code__') or pace_function.__closure__:
+  raise TypeError('Persistent summaries require an identifiable non-closure pace function')
+ files={Path(__file__),Path(inspect.getfile(pace_function))}
+ # Pace grouping also reads constants from the shared influence module.
+ globals_=pace_function.__globals__;influence=globals_.get('influence')
+ config={k:v for k,v in globals_.items() if k.startswith('PACE_')}
+ if influence is not None:
+  files.add(Path(inspect.getfile(influence)))
+  config['influence']={k:v for k,v in vars(influence).items() if k.startswith('PACE_')}
+ return dict(files={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in files},
+     pace=hashlib.sha256((inspect.getsource(pace_function)+pace_function.__code__.co_code.hex()).encode()).hexdigest(),
+     defaults=cache_encode([pace_function.__defaults__,pace_function.__kwdefaults__]),
+     config=cache_encode(config),
+     quality=hashlib.sha256((inspect.getsource(quality_laps)+quality_laps.__code__.co_code.hex()).encode()).hexdigest(),
+     clock_margin=DELETION_CLOCK_MARGIN.isoformat(),numpy=np.__version__,pandas=pd.__version__,
+     python=list(sys.version_info[:3]))
+
+def session_queries(event,code):
+ key=event[code+'_openf1']['session_key'];queries=[('drivers',dict(session_key=key))]
+ if not code.startswith('FP'):queries.append(('session_result',dict(session_key=key)))
+ if code in {'R','S'}:
+  q=event.get(('Q' if code=='R' else 'SQ')+'_openf1')
+  if isinstance(q,dict):queries.append(('starting_grid',dict(session_key=q['session_key'])))
+ if code.startswith('FP') or code=='S':
+  queries.extend((endpoint,dict(session_key=key)) for endpoint in ['race_control','laps','stints','pit','weather'])
+ return queries
+
+def effective_processing_cutoff(now,session,raw):
+ """Coalesce only cutoffs after every loaded timestamp and completed lap."""
+ latest=stamp(session['date_end'])
+ try:
+  for rows in raw.values():
+   for row in rows:
+    for field in ['date','date_start','date_end']:
+     if row.get(field):latest=max(latest,stamp(row[field]))
+    if row.get('date_start') and isinstance(row.get('lap_duration'),(int,float)) and np.isfinite(row['lap_duration']) and row['lap_duration']>0:
+     latest=max(latest,stamp(row['date_start'])+pd.Timedelta(seconds=row['lap_duration']))
+  if now>latest+pd.Timedelta(seconds=1):return 'all-loaded-evidence'
+ except (ValueError,TypeError,OverflowError):pass
+ return stamp(now).isoformat()
+
+
 class Store:
- def __init__(self,client,year,now,pace_function,policy='standard'):
+ def __init__(self,client,year,now,pace_function,policy='standard',processed_cache=False,rebuild=False,processed_root=None):
   self.client=client;self.year=year;self.now=now;self.pace_function=pace_function;self.policy=policy;self.unavailable=[];self.warnings=[];self.memory={}
+  self.processed_cache=processed_cache;self.rebuild=rebuild
+  self.processed_root=(Path(processed_root) if processed_root is not None else Path(client.root).parent/'processed_sessions') if processed_cache else None
+  self.processed_stats=dict(hits=0,misses=0,writes=0,skipped=0,errors=0);self.memory_context={}
  def get(self,event,code):
+  if not self.processed_cache:return self._process(event,code,self.client.get)
+  session=event.get(code+'_openf1');rnd=int(event['RoundNumber']);identity=(rnd,code)
+  if not isinstance(session,dict) or stamp(session['date_start'])>=self.now or stamp(session['date_end'])>=self.now:return None
+  try:
+   signature=processing_signature(self.pace_function)
+   context=dict(schema=PROCESSED_SCHEMA,year=self.year,event=event.to_dict() if hasattr(event,'to_dict') else event,
+       session=code,policy=self.policy,signature=signature,
+       entrant=getattr(self,'confirmed_entries',{}).get(rnd),before_24h=self.now<stamp(session['date_start'])+pd.Timedelta(days=1))
+   if context['entrant']:context['entrant_known']=stamp(context['entrant']['known_utc'])<=self.now
+   namespace=cache_digest(context);memory_id=cache_digest([context,self.now,bool(self.client.refresh),bool(self.client.offline),self.rebuild])
+  except (TypeError,ValueError,OSError,AttributeError):
+   self.memory.pop(identity,None);self.processed_stats['skipped']+=1;return self._process(event,code,self.client.get)
+  if identity in self.memory and self.memory_context.get(identity)==memory_id:return self.memory[identity]
+  self.memory.pop(identity,None);self.client.register_session(session)
+  raw={};errors={}
+  def fetch(endpoint,**params):
+   key=(endpoint,tuple(sorted(params.items())))
+   if key in errors:raise errors[key]
+   if key not in raw:
+    try:raw[key]=self.client.get(endpoint,**params)
+    except (ValueError,KeyError,TypeError,OSError,requests.RequestException) as exc:errors[key]=exc;raise
+   return raw[key]
+  queries=session_queries(event,code);index=self.processed_root/'index'/(namespace+'.json');known=False
+  bypass=self.rebuild or bool(self.client.refresh)
+  if not bypass:
+   try:
+    descriptor=json.loads(index.read_text())
+    known=(isinstance(descriptor,dict) and descriptor.get('schema')==PROCESSED_SCHEMA and descriptor.get('namespace')==namespace
+           and descriptor.get('queries')==cache_encode(queries))
+   except (OSError,ValueError,TypeError):pass
+  def key_for_raw():
+   return cache_digest(dict(context=context,cutoff=effective_processing_cutoff(self.now,session,raw),
+       raw=[dict(endpoint=e,params=dict(params),data=rows) for (e,params),rows in raw.items()]))
+  if known:
+   try:
+    for endpoint,params in queries:
+     observed=fetch(endpoint,**params)
+     if endpoint=='drivers' and len(observed)<3:raise ValueError('Incomplete current driver response')
+     if endpoint=='session_result' and not observed:raise ValueError('Empty current result response')
+     if endpoint=='race_control' and self.now<stamp(session['date_start'])+pd.Timedelta(days=1) and not any(r.get('flag')=='CHEQUERED' and stamp(session['date_start'])<=stamp(r['date'])<self.now for r in observed):raise ValueError('No current completion flag')
+    digest=key_for_raw();path=self.processed_root/'objects'/(digest+'.json');blob=path.read_bytes();envelope=json.loads(blob)
+    if not isinstance(envelope,dict) or not isinstance(envelope.get('payload'),dict):raise ValueError('Invalid processed-cache envelope')
+    payload=envelope['payload']
+    if envelope.get('sha256')!=cache_digest(payload) or payload.get('schema')!=PROCESSED_SCHEMA or payload.get('key')!=digest or payload.get('namespace')!=namespace:raise ValueError('Processed-cache hash/identity mismatch')
+    data=cache_decode(payload['data']);warnings=cache_decode(payload['warnings'])
+    if not isinstance(data,dict) or data.get('code')!=code or not isinstance(data.get('drivers'),list) or len(data['drivers'])<3 or not isinstance(warnings,list) or not all(isinstance(w,dict) for w in warnings):raise ValueError('Invalid processed summary')
+    self.warnings.extend(warnings);self.memory[identity]=data;self.memory_context[identity]=memory_id;self.processed_stats['hits']+=1
+    for warning in warnings:print(f"  R{rnd} {code}: {warning.get('reason','cached source warning')}",flush=True)
+    return data
+   except (OSError,ValueError,KeyError,TypeError,requests.RequestException):self.processed_stats['misses']+=1
+  else:self.processed_stats['misses']+=1
+  before=len(self.warnings);result=self._process(event,code,fetch);self.memory_context[identity]=memory_id
+  if result is not None and not errors:
+   try:
+    expected={(e,tuple(sorted(params.items()))) for e,params in queries}
+    if set(raw)!=expected:raise ValueError('Incomplete processed dependencies')
+    digest=key_for_raw();payload=dict(schema=PROCESSED_SCHEMA,key=digest,namespace=namespace,data=cache_encode(result),warnings=cache_encode(self.warnings[before:]))
+    save(self.processed_root/'objects'/(digest+'.json'),dict(sha256=cache_digest(payload),payload=payload))
+    save(index,dict(schema=PROCESSED_SCHEMA,namespace=namespace,queries=cache_encode(queries)))
+    self.processed_stats['writes']+=1
+   except (OSError,ValueError,TypeError):self.processed_stats['errors']+=1
+  return result
+
+ def _process(self,event,code,fetch):
   rnd=int(event['RoundNumber']);identity=(rnd,code)
   if identity in self.memory:return self.memory[identity]
   session=event.get(code+'_openf1')
@@ -372,7 +507,7 @@ class Store:
   if stamp(session['date_end'])>=self.now:return None
   key=session['session_key'];start=stamp(session['date_start']);self.client.register_session(session)
   def get(endpoint):
-   data=self.client.get(endpoint,session_key=key)
+   data=fetch(endpoint,session_key=key)
    if any(r.get('meeting_key')!=session['meeting_key'] for r in data):raise ValueError('OpenF1 meeting identity mismatch')
    return data
   try:
@@ -399,7 +534,7 @@ class Store:
    grid={}
    if code in {'R','S'}:
     q=event.get(('Q' if code=='R' else 'SQ')+'_openf1')
-    if isinstance(q,dict):grid={r['driver_number']:r.get('position') for r in self.client.get('starting_grid',session_key=q['session_key'])}
+    if isinstance(q,dict):grid={r['driver_number']:r.get('position') for r in fetch('starting_grid',session_key=q['session_key'])}
    pace={};lapdata=False;audit=[]
    if code.startswith('FP') or code=='S':
     control=get('race_control')

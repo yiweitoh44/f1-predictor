@@ -218,6 +218,30 @@ archive does not automatically choose old responses for --as-of runs.
 It requires previously downloaded OpenF1 sessions and metadata; a FastF1 cache
 alone is insufficient. Keep the entire cache/openf1 directory when moving it.
 
+FASTER REPEAT RUNS
+Completed-session lap checks, pace, classifications and diagnostic weather can
+reuse verified JSON summaries in ~/F1Data/cache/processed_sessions, outside Git.
+The normal raw OpenF1 cache freshness/refresh checks still run first. Changed
+responses, session/event identity, entry-list evidence, lap-quality/pace rules,
+processing code or Python/NumPy/pandas versions cause processing again. A cutoff
+can reuse a summary only after all its loaded evidence; entry-publication and
+24-hour completion gates remain separate. Missing/failed required data never
+uses an old processed result. Damaged/missing summaries are rebuilt safely.
+Warnings and lap/admission audits are retained; source_manifest.json records
+the actual raw responses checked on this run. This does not cache a forecast,
+model or simulations, or make fresh network downloads faster.
+
+The normal prediction command automatically uses eligible summaries.
+To force processing again while retaining raw downloads:
+  python predict_anytime.py --year 2026 --race Singapore --session race --rebuild-summaries
+For a rebuild without downloads, add --offline. --refresh refreshes sources and
+also bypasses processed summaries; with --offline it rebuilds from local raw data.
+run_info.json / processed_session_cache reports hits, misses, writes, skipped
+unsupported processing functions and cache errors. Optional weather-fetch errors
+are not persisted as successful summaries. Cache write failures do not stop a
+usable prediction. Keep raw cache/openf1 for offline use; processed summaries
+are disposable and cannot replace it. No new dependencies or command required.
+
 lap_quality.csv also shows the reported stint, initial tyre age, derived tyre
 life, freshness assumption and elapsed seconds from scheduled session start.
 data_coverage.csv reports raw/accepted/unverified lap counts and drivers with

@@ -412,7 +412,7 @@ def race_session_context(results, raw_laps):
 
 class Store(openf1_data.Store):
     def __init__(self, year, now, refresh=False, offline=False, rebuild_summaries=False):
-        super().__init__(openf1_data.Client(CACHE_ROOT, offline, refresh), year, now, tyre_pace_summary)
+        super().__init__(openf1_data.Client(CACHE_ROOT, offline, refresh), year, now, tyre_pace_summary, processed_cache=True, rebuild=rebuild_summaries)
 
 
 def circuit_similarity(a, b):
@@ -1917,6 +1917,7 @@ def run(args):
                 "circuit_history_window_rounds": influence.HISTORY_WEEKENDS,
                 "offline": args.offline,
                 "summary_schema": SUMMARY_SCHEMA,
+                "processed_session_cache": getattr(store,"processed_stats",None),
                 "data_provider": "OpenF1; no FastF1 runtime or timing-cache dependency",
                 "lap_quality": "derived OpenF1 checks, not an official IsAccurate flag; see lap_quality.csv",
                 "unavailable_sessions": store.unavailable,
