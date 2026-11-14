@@ -1302,6 +1302,7 @@ def explain_driver(folder, driver):
         booster=xgb.Booster();booster.load_model(bytearray(saved['model.json']))
         raw=float(booster.predict(xgb.DMatrix(inputs.loc[[code],columns].to_numpy(dtype=np.float32),feature_names=columns))[0])
         score=(1-alpha)*anchor+alpha*np.clip(raw,0.,1.)
+    base_reconstructed = score is not None
     if score is not None:steps.append(dict(stage='Learned model' if alpha else 'Early evidence fallback',before=anchor,after=score,change=score-anchor))
     for flag,name in [('qualifying_front','qualifying_front.csv'),('sprint_specialist','sprint_front.csv'),('race_specialist','race_front.csv')]:
         if info.get(flag,{}).get('active'):
@@ -1338,7 +1339,7 @@ def explain_driver(folder, driver):
         history=dict(driver_form=val(family+'_driver_form'),driver_weekends=val(family+'_history_weekends'),
             team_form=val(family+'_team_form'),team_weekends=val(family+'_team_history_weekends'),
             related_circuit_form=val(family+'_related_circuit_form'),related_weekends=val(family+'_related_circuit_weekends')),
-        trace_reconciled=score is not None,sessions=sessions,model_features=info.get('model_features',[]),
+        trace_reconciled=base_reconstructed and score is not None,sessions=sessions,model_features=info.get('model_features',[]),
         model_inputs={key:val(key) for key in info.get('model_features',[])},
         missing_model_inputs=[k for k in info.get('model_features',[]) if not np.isfinite(val(k))],
         caveat='Recorded inputs and score changes; not causal explanations. Shares are uncalibrated. Scores are not positions.'))
