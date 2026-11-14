@@ -1221,3 +1221,42 @@ issue/publication/observation timestamps, PDF SHA256, declared entries/reserves,
 manual override hash, fallback and warnings. OpenF1 identity restoration is also
 recorded in source_warnings. Raw documents and immutable entrant revisions live
 under the external cache/entrants directory. No cache/data/tests are added to Git.
+
+OPTIONAL DRIVER VIEW
+--------------------
+Normal run with one driver explanation:
+  python predict_anytime.py --year 2026 --race Singapore --session race --explain VER
+  Add --explain RUS for a second driver, or --explain all for the whole field.
+Unknown driver codes stop before model fitting once the roster is known.
+
+Inspect a saved copy without a network call, model fit, simulation or result CSV:
+  python predict_anytime.py --explain-forecast "C:\path\to\forecasts\saved-copy" --explain VER
+Use the exact immutable forecast folder printed by the predictor, not latest.
+It must contain forecast_manifest.json. Hash checks include active specialist,
+Sprint-calibration and new driver-evidence files. The viewer writes no evaluation,
+model, prediction or cache file. Do not combine with prediction-changing/scoring
+flags. Saved metadata determines the event/session; --race is unnecessary here.
+
+The optional view reports:
+- Actual saved roster source, pre-target cutoff and available sessions.
+- Starting grid, qualifying/SQ position, pit status and grid source separately.
+- Actual explicit evidence weights; these are NOT percentages of total final
+  model importance. Missing sources have zero explicit weight; a historical
+  fallback value in a learned input is not falsely labelled observed pace.
+- Driver/team/related-circuit form scores and available weekend counts.
+- Exact base learned blend and recorded specialist/recovery/Sprint score steps.
+  Specialist reorder slots and normalized score changes are not predicted places.
+- Admitted short/long compound comparisons, matched-lap counts, usable comparison
+  drivers, derived lap exclusions and unverified evidence. Admission alone does
+  not establish that every component consumed that comparison. Some sessions
+  have only classifications/no stored audit; this is not a zero-lap assertion.
+
+New runs save driver_evidence.json and freeze/hash it. Old snapshots do not borrow
+mutable latest diagnostics; absent detailed evidence is reported unavailable.
+The base native model is evaluated from its saved parameters/inputs, not retrained.
+Its blend is reconciled through recorded final adjustments to simulation_details.
+The machine-readable report also retains actual native input values/missingness.
+Tree attributions were reviewed for the native component; they cannot by themselves
+explain final reorder/GP operations or prove causes. No cause-of-retirement,
+fuel/engine programme or hypothetical traffic story is invented. Shares remain
+experimental. Normal predictions, training and the main table are unchanged.

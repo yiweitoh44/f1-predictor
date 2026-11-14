@@ -1217,6 +1217,181 @@ def prediction_roster(current, allowed, usable_events, all_data):
     return drivers, source
 
 
+def driver_evidence(current, drivers):
+    """Describe actual admission gates without reclassifying laps or fitting models."""
+    report = {}
+    for driver in drivers:
+        name = driver['driver']; sessions = {}
+        for code, data in current.items():
+            participant = next((d for d in data['drivers'] if d['driver'] == name), None)
+            audit = [r for r in data.get('lap_quality_audit', []) if r['driver'] == name]
+            reasons = {}
+            for r in audit:
+                if not r['accepted']:
+                    reason = r.get('reason') or 'unrecorded reason'
+                    reasons[reason] = reasons.get(reason, 0) + 1
+            comparisons = []
+            if code.startswith('FP') or code == 'S':
+                admitted = {(r['label'],r['compound']):r for r in influence.matched_pace_evidence(name,data,('short','long'))}
+                for label in ['short','long']:
+                    for compound in ['soft','medium','hard','intermediate','wet']:
+                        key=f'{label}_{compound}'
+                        count=number(participant.get(key+'_matched_laps',participant.get(label+'_matched_laps'))) if participant else np.nan
+                        gap=number(participant.get(key+'_gap_pct')) if participant else np.nan
+                        peers=sum(number(d.get(key+'_matched_laps',d.get(label+'_matched_laps'))) >= 2 and influence.pace_reason(d.get(key+'_gap_pct')) is None for d in data['drivers'])
+                        accepted=admitted.get((label,compound))
+                        reason=('admitted comparison' if accepted else 'driver absent from session' if not participant else
+                                influence.pace_reason(gap) or ('matched-lap count unknown' if not np.isfinite(count) else
+                                'fewer than two matched laps' if count<2 else 'fewer than four usable comparison drivers'))
+                        comparisons.append(dict(kind=label,compound=compound,matched_laps=count,gap_pct=gap,
+                            peers=peers,admitted=bool(accepted),score=accepted['score'] if accepted else None,reason=reason))
+            sessions[code]=dict(participant_present=participant is not None,lap_timing_loaded=bool(data.get('lap_data_loaded')),
+                audited_laps=len(audit),accepted_laps=sum(r['accepted'] for r in audit),excluded_or_unverified=reasons,
+                identity_source=participant.get('identity_source') if participant else None,comparisons=comparisons)
+        report[name]=sessions
+    return dict(schema=1,drivers=json_safe(report),meaning='Admission/support facts, not causal attribution or proof of fuel/engine programme')
+
+
+def explain_driver(folder, driver):
+    """Build a factual score trace from hash-verified saved forecast artifacts."""
+    import io
+    saved, manifest, _ = forecast_validation.read_saved_forecast(folder)
+    info = json.loads(saved['run_info.json'])
+    if forecast_validation.utc(info['as_of']) >= forecast_validation.utc(info['target_start_utc']):
+        raise ValueError('Saved input cutoff is not before the target session.')
+    code = str(driver).strip().upper()
+    def table(name):
+        if name not in saved: raise ValueError('Saved forecast lacks '+name+'; this evidence is unavailable.')
+        frame=pd.read_csv(io.BytesIO(saved[name]))
+        if 'driver' not in frame or frame.driver.isna().any() or frame.driver.duplicated().any():
+            raise ValueError('Ambiguous saved driver identities in '+name)
+        return frame.set_index('driver')
+    predictions=table('predictions.csv')
+    if code not in predictions.index:
+        raise ValueError('Driver '+code+' is not in this forecast. Available: '+', '.join(predictions.index))
+    inputs=table('prediction_inputs.csv'); details=table('simulation_details.csv'); grid=table('starting_grid.csv')
+    if not set(predictions.index)==set(inputs.index)==set(details.index)==set(grid.index):
+        raise ValueError('Saved explanation artifacts have different driver fields.')
+    row=inputs.loc[code]; result=predictions.loc[code]; final=details.loc[code]
+    val=lambda key: number(row.get(key))
+    family='race' if info['target'] in ['race','sprint'] else 'qualifying'
+    source_specs=[('History','history','influence_history',None),
+        ('Starting grid','starting_grid','influence_grid','start_grid_norm'),
+        ('Qualifying performance','grid_qualifying','influence_grid_qualifying','qualifying_grid_norm'),
+        ('Earlier Sprint evidence','sprint','influence_sprint','sprint_evidence_score'),
+        ('Earlier SQ result','qualifying','influence_qualifying','SQ_position_norm'),
+        ('Practice comparisons','practice','influence_practice','practice_evidence_score')]
+    evidence=[]
+    for label,weight,value,raw in source_specs:
+        w=val('influence_weight_'+weight)
+        if weight=='starting_grid' and not np.isfinite(w):w=val('influence_weight_grid')
+        if not np.isfinite(w):w=0.
+        available=np.isfinite(val(raw)) if raw else any(np.isfinite(val(family+'_'+k)) for k in ['driver_form','team_form','related_circuit_form'])
+        status=('used' if available else 'neutral history fallback') if w>0 else ('available; zero explicit weight' if available else 'missing; zero explicit weight')
+        evidence.append(dict(source=label,weight=float(w),score=val(value) if w>0 else None,status=status))
+    steps=[];anchor=val('influence_anchor');alpha=number(info.get('active_learned_share'))
+    if not np.isfinite(alpha):alpha=number(json.loads(saved['influence_policy.json']).get('learned_adjustment_share'))
+    score=None
+    if info.get('forecast_method')=='early_season_evidence':score=anchor;alpha=0.
+    elif np.isfinite(alpha):
+        import xgboost as xgb
+        columns=info.get('model_features',[])
+        if not columns or not set(columns).issubset(inputs.columns):raise ValueError('Saved native model inputs are incomplete.')
+        booster=xgb.Booster();booster.load_model(bytearray(saved['model.json']))
+        raw=float(booster.predict(xgb.DMatrix(inputs.loc[[code],columns].to_numpy(dtype=np.float32),feature_names=columns))[0])
+        score=(1-alpha)*anchor+alpha*np.clip(raw,0.,1.)
+    if score is not None:steps.append(dict(stage='Learned model' if alpha else 'Early evidence fallback',before=anchor,after=score,change=score-anchor))
+    for flag,name in [('qualifying_front','qualifying_front.csv'),('sprint_specialist','sprint_front.csv'),('race_specialist','race_front.csv')]:
+        if info.get(flag,{}).get('active'):
+            audit=table(name).loc[code];before=number(audit['base_score']);after=number(audit['final_score'])
+            if score is not None and not np.isclose(score,before,atol=1e-6):raise ValueError('Saved specialist trace does not match its input score.')
+            steps.append(dict(stage=flag.replace('_',' '),before=before,after=after,change=after-before,selected=bool(audit['selected'])));score=after
+    recovery_reason=None
+    if info.get('recovery',{}).get('active') and 'recovery_final_score' in row:
+        before=val('recovery_base_score');after=val('recovery_final_score')
+        if score is not None and not np.isclose(score,before,atol=1e-6):raise ValueError('Saved recovery trace does not match its input score.')
+        if val('recovery_grid_known')!=1:recovery_reason='independent starting grid unavailable'
+        elif bool(grid.loc[code].get('pit_lane')==True):recovery_reason='confirmed pit-lane starter excluded'
+        elif after==before:recovery_reason='no bounded recovery score change; not a claim that recovery is impossible'
+        else:recovery_reason='bounded adjustment from saved qualifying/form/long-run evidence'
+        steps.append(dict(stage='Recovery',before=before,after=after,change=after-before,reason=recovery_reason));score=after
+    if info.get('sprint_calibration',{}).get('active'):
+        with np.load(io.BytesIO(saved['sprint_calibration.npz']),allow_pickle=False) as state:
+            drivers=state['drivers'].tolist()
+            if len(drivers)!=len(set(drivers)) or set(drivers)!=set(predictions.index):raise ValueError('Saved Sprint adjustment driver field is inconsistent.')
+            i=drivers.index(code);before=float(state['base_scores'][i]);after=float(state['adjusted_scores'][i])
+        if score is not None and not np.isclose(score,before,atol=1e-6):raise ValueError('Saved Sprint trace does not match its input score.')
+        steps.append(dict(stage='Sprint residual adjustment',before=before,after=after,change=after-before));score=after
+    if score is not None and not np.isclose(score,float(final['score']),atol=1e-6):raise ValueError('Explanation trace does not reconcile to final score.')
+    sessions=None
+    if 'driver_evidence.json' in saved:
+        record=json.loads(saved['driver_evidence.json'])
+        if record.get('schema')!=1 or code not in record.get('drivers',{}):raise ValueError('Invalid driver-evidence record.')
+        sessions=record['drivers'][code]
+    return json_safe(dict(driver=code,name=result.get('name',code),event=info['event'],target=info['target'],
+        cutoff=info['as_of'],used_sessions=info.get('used_sessions',[]),roster_source=info.get('roster_source','not recorded'),
+        predicted_position=int(result['predicted_position']),mean_position=float(final['mean_position']),
+        grid=grid.loc[code].to_dict(),history_weekends=val(family+'_history_weekends'),
+        evidence=evidence,explicit_score=anchor,learned_share=alpha,steps=steps,final_score=float(final['score']),
+        history=dict(driver_form=val(family+'_driver_form'),driver_weekends=val(family+'_history_weekends'),
+            team_form=val(family+'_team_form'),team_weekends=val(family+'_team_history_weekends'),
+            related_circuit_form=val(family+'_related_circuit_form'),related_weekends=val(family+'_related_circuit_weekends')),
+        trace_reconciled=score is not None,sessions=sessions,model_features=info.get('model_features',[]),
+        model_inputs={key:val(key) for key in info.get('model_features',[])},
+        missing_model_inputs=[k for k in info.get('model_features',[]) if not np.isfinite(val(k))],
+        caveat='Recorded inputs and score changes; not causal explanations. Shares are uncalibrated. Scores are not positions.'))
+
+
+def print_driver_explanation(report):
+    def number_text(value,fmt='.4f'):
+        return format(float(value),fmt) if value is not None else 'unavailable'
+    print(f"\n{report['driver']} — {report['name']}: predicted P{report['predicted_position']}, mean {report['mean_position']:.2f}")
+    print(f"{report['event']} / {report['target']} | cutoff {report['cutoff']}")
+    print('Sessions available before cutoff: '+(', '.join(report['used_sessions']) or 'none'))
+    print('Roster: '+report['roster_source'])
+    grid=report['grid'];pit=grid.get('pit_lane')
+    print('Starting grid: '+('not applicable for this session' if grid.get('source')=='not applicable' else 'pit lane' if pit is True else number_text(grid.get('grid_position'),'.0f'))+
+          '; qualifying/SQ position: '+number_text(grid.get('qualifying_position'),'.0f')+'; source: '+str(grid.get('source','unavailable')))
+    history=report['history']
+    print('Earlier form scores (lower is better): driver '+number_text(history['driver_form'])+' ('+number_text(history['driver_weekends'],'.0f')+' weekends); team '+number_text(history['team_form'])+'; related circuits '+number_text(history['related_circuit_form'])+' ('+number_text(history['related_weekends'],'.0f')+' weekends).')
+    print('Explicit evidence mix (before the learned adjustment; lower scores are better):')
+    for e in report['evidence']:
+        print(f"  {e['source']}: {100*e['weight']:.1f}% | score {number_text(e['score'])} | {e['status']}")
+    print('Learned-model blend share: '+number_text(100*report['learned_share'] if report['learned_share'] is not None else None,'.1f')+'% (separate from the explicit mix).')
+    for step in report['steps']:
+        print(f"  {step['stage']}: {number_text(step['before'])} -> {number_text(step['after'])} (change {step['change']:+.4f})")
+        if 'selected' in step:print('    '+('Inside the specialist selection' if step['selected'] else 'Outside the specialist selection'))
+        if step.get('reason'):print('    '+step['reason'])
+    if report['sessions'] is None:
+        print('Detailed session exclusions unavailable in this older saved forecast.')
+    else:
+        print('Session evidence (an admitted comparison can still have zero explicit weight):')
+        for code,data in report['sessions'].items():
+            good=[v for v in data['comparisons'] if v['admitted']]
+            audit_text=f"{data['accepted_laps']}/{data['audited_laps']} audited laps accepted" if data['audited_laps'] else 'no recorded lap audit (not a zero-lap claim)'
+            print(f"  {code}: {'driver present' if data['participant_present'] else 'driver absent'}; {audit_text}; {len(good)} admitted compound/run comparisons.")
+            for v in good:print(f"    {v['kind']} {v['compound']}: {v['matched_laps']:g} matched laps, {v['peers']} comparison drivers; recorded comparable gap {v['gap_pct']:.3f}%.")
+            reasons={v['reason'] for v in data['comparisons'] if not v['admitted']}
+            if reasons:print('    Unavailable comparisons: '+'; '.join(sorted(reasons)))
+            if data['excluded_or_unverified']:print('    Lap exclusions: '+'; '.join(f'{k}: {v}' for k,v in data['excluded_or_unverified'].items()))
+    if not report['trace_reconciled']:print('Full base-score reconstruction unavailable for this legacy forecast.')
+    print(report['caveat'])
+
+
+def show_driver_explanations(folder, drivers):
+    requested=[d.strip().upper() for d in drivers]
+    if 'ALL' in requested:
+        saved,_,_=forecast_validation.read_saved_forecast(folder)
+        import io
+        available=pd.read_csv(io.BytesIO(saved['predictions.csv'])).driver.tolist()
+        unknown=set(requested)-set(available)-{'ALL'}
+        if unknown:raise ValueError('Unknown driver codes: '+', '.join(sorted(unknown)))
+        requested=available
+    reports=[explain_driver(folder,d) for d in dict.fromkeys(requested)]
+    for report in reports:print_driver_explanation(report)
+    return reports
+
+
 def run(args):
     now = pd.Timestamp.now(tz="UTC")
     if args.as_of:
@@ -1374,6 +1549,8 @@ def run(args):
             drivers = fallback
     grid_sources.validate_roster(drivers)
     names = [d["driver"] for d in drivers]
+    unknown={code.strip().upper() for code in (getattr(args,"explain",None) or [])}-set(names)-{"ALL"}
+    if unknown:raise ValueError("Explanation driver not in this roster: "+", ".join(sorted(unknown)))
     print("Roster: " + roster_source)
     for warning in roster_audit['warnings']:
         print('Roster warning: ' + warning)
@@ -1680,7 +1857,7 @@ def run(args):
     pd.DataFrame(cohort_rows, columns=cohort_columns).to_csv(folder / "section_cohorts.csv", index=False)
     pd.DataFrame(rejection_rows, columns=["year", "round", "location", "session", "driver", "lap", "reason"]).to_csv(
         folder / "section_rejections.csv", index=False)
-    metadata = {"target": args.session, "event": event["EventName"], "as_of": now.isoformat(),
+    metadata = {"driver_explanations": dict(active=True,schema=1,scope='factual evidence and score trace'), "target": args.session, "event": event["EventName"], "as_of": now.isoformat(),
                 "year": args.year, "round": int(event['RoundNumber']),
                 "target_start_utc": target_start.isoformat(),
                 "target_end_utc": (event.get(target + '_openf1') or {}).get('date_end'),
@@ -1751,6 +1928,7 @@ def run(args):
     if sprint_calibration_policy['active']:
         metadata['prediction_formula'] += '; then bounded earlier-weekend GP residual adjustment'
         metadata['validation_comparison']['scope'] += '; Sprint checks exclude the final residual calibration'
+    (folder/'driver_evidence.json').write_text(json.dumps(driver_evidence(current,drivers),indent=2,allow_nan=False),encoding='utf-8')
     source_manifest = dict(provider='OpenF1',
         archive_root=str(store.client.root),
         cache_recoveries=schedule_client.cache_events + store.client.cache_events,
@@ -1766,10 +1944,13 @@ def run(args):
     print(f"Saved: {folder}")
     frozen = forecast_validation.freeze(folder, ROOT)
     print(f'Forecast copy saved: {frozen}')
+    if getattr(args,'explain',None):show_driver_explanations(frozen,args.explain)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--explain', action='append', metavar='DRIVER', help='Optional driver evidence view; repeat codes or use all')
+    parser.add_argument('--explain-forecast', type=Path, help='Inspect an immutable saved forecast offline; requires --explain')
     parser.add_argument("--year", type=int, default=2026)
     parser.add_argument("--race")
     parser.add_argument("--session", choices=MODES, default="race")
@@ -1790,6 +1971,15 @@ def main():
     parser.add_argument("--air-temp", type=float, help="Record temperature scenario in Celsius; diagnostic only, no score effect")
     parser.add_argument("--wet", type=int, choices=[0, 1], help="Record dry/wet scenario; diagnostic only, no score effect")
     args = parser.parse_args()
+    if (args.explain or args.explain_forecast) and (args.score_forecast or args.actual_results or args.list_races):
+        parser.error('Driver explanations cannot be combined with result scoring or --list-races.')
+    if args.explain_forecast:
+        if not args.explain:parser.error('--explain-forecast requires --explain DRIVER or all.')
+        if args.year!=2026 or args.session!='race' or args.grid_source!='auto' or args.tracks!=ROOT/'tracks.csv' or args.race or args.as_of or args.refresh or args.roster or args.grid or args.rebuild_summaries or args.air_temp is not None or args.wet is not None or args.simulations!=25000:
+            parser.error('Saved explanations inspect recorded evidence; omit prediction-changing flags.')
+        try:show_driver_explanations(args.explain_forecast,args.explain)
+        except (ValueError,OSError,KeyError) as exc:raise SystemExit('Explanation stopped: '+str(exc)) from exc
+        return
     if args.score_forecast or args.actual_results:
         if not (args.score_forecast and args.actual_results):
             parser.error('--score-forecast and --actual-results must be used together.')

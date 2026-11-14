@@ -21,6 +21,7 @@ SESSIONS = {'q': 'qualifying', 'qualifying': 'qualifying',
             'sq': 'sprint-qualifying', 'sprint-qualifying': 'sprint-qualifying',
             's': 'sprint', 'sprint': 'sprint', 'r': 'race', 'race': 'race'}
 AUXILIARY_FILES = {
+    'driver_explanations': ('driver_evidence.json',),
     'sprint_calibration': ('sprint_calibration.npz',),
     'qualifying_front': ('pole_model.json', 'qualifying_front.csv'),
     'sprint_specialist': ('sprint_model.json', 'sprint_front.csv'),
@@ -113,9 +114,9 @@ def freeze(latest, code_root):
     return destination
 
 
-def score(folder, actual_file, now=None):
-    """Score only a verified saved copy and an explicitly supplied outcome CSV."""
-    folder, actual_file = Path(folder), Path(actual_file)
+def read_saved_forecast(folder):
+    """Read and verify immutable artifacts without scoring or downloading data."""
+    folder = Path(folder)
     manifest_bytes = (folder / 'forecast_manifest.json').read_bytes()
     manifest = json.loads(manifest_bytes)
     if (not isinstance(manifest, dict) or manifest.get('schema') != 1
@@ -130,6 +131,14 @@ def score(folder, actual_file, now=None):
     meta = json.loads(saved['run_info.json'])
     if not set(manifest['files']).issubset(active_files(meta)) or not set(active_files(meta)[len(FILES):]).issubset(saved):
         raise ValueError('Active specialist files are missing or inactive files were included.')
+    return saved, manifest, manifest_bytes
+
+
+def score(folder, actual_file, now=None):
+    """Score only a verified saved copy and an explicitly supplied outcome CSV."""
+    folder, actual_file = Path(folder), Path(actual_file)
+    saved, manifest, manifest_bytes = read_saved_forecast(folder)
+    meta = json.loads(saved['run_info.json'])
     created, start = utc(manifest['created_utc']), utc(meta['target_start_utc'])
     end = utc(meta.get('target_end_utc') or meta['target_start_utc'])
     if end < start:
