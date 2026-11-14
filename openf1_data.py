@@ -2,13 +2,91 @@
 from pathlib import Path
 from datetime import timezone
 from collections import Counter
-import hashlib,json,time,re,os,tempfile
+import hashlib,json,time,re,os,tempfile,random
+from email.utils import parsedate_to_datetime
+from urllib.parse import urlsplit
 import numpy as np
 import pandas as pd
 import requests
 
 NAMES={'Practice 1':'FP1','Practice 2':'FP2','Practice 3':'FP3','Sprint Qualifying':'SQ','Sprint Shootout':'SQ','Qualifying':'Q','Sprint':'S','Race':'R'}
 _LAST_REQUEST=0.
+HTTP_ATTEMPTS=4
+HTTP_WAIT_BUDGET=60.
+HTTP_COOLDOWNS={}
+RETRY_STATUSES={408,429,500,502,503,504,520,521,522,523,524}
+
+class DownloadError(requests.RequestException):
+ def __init__(self,source,attempts,reason,retry_in=0):
+  self.attempts=attempts;self.retry_in=retry_in
+  super().__init__(f'GET {source} unavailable after {attempts} attempts: {reason}'+
+      (f'; try again in {retry_in:.0f}s or use --offline with previously cached data' if retry_in else ''))
+
+def retry_after_seconds(value,server_date=None):
+ """Parse delta seconds or an HTTP date; never shorten a valid server wait."""
+ if not isinstance(value,str):return None
+ value=value.strip()
+ if re.fullmatch(r'(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)',value):return float(value)
+ try:
+  when=parsedate_to_datetime(value)
+  if when.tzinfo is not None:
+   reference=time.time()
+   if server_date:
+    try:
+     remote=parsedate_to_datetime(server_date)
+     if remote.tzinfo is not None:reference=min(reference,remote.timestamp())
+    except (ValueError,TypeError,OverflowError,OSError):pass
+   return max(0.,when.timestamp()-reference)
+ except (ValueError,TypeError,OverflowError,OSError):pass
+ return None
+
+def get_response(url,timeout=(5,25),events=None):
+ """Retry idempotent GET transport/service failures, not invalid data or auth.
+
+ Four attempts and sixty seconds of total retry/pacing sleep per call. Requests'
+ connect/read timeouts remain inactivity limits, not a wall-clock deadline.
+ Terminal outages briefly fail fast so a historical loop cannot hammer a host.
+ """
+ global _LAST_REQUEST
+ parsed=urlsplit(url);origin=f'{parsed.scheme}://{parsed.netloc}';source=(parsed.hostname or '')+parsed.path
+ waited=0.;events=events if events is not None else []
+ def record(attempt,reason,wait=0,action='retry'):
+  events.append(dict(source=source,attempt=attempt,reason=reason,wait_seconds=wait,action=action))
+ def stop(attempt,reason,hint=0,host=True):
+  delay=max(30.,hint);HTTP_COOLDOWNS[origin if host else url]=(time.monotonic()+delay,reason)
+  record(attempt,reason,action='unavailable')
+  raise DownloadError(source,attempt,reason,delay) from None
+ for key in [origin,url]:
+  if key in HTTP_COOLDOWNS:
+   until,reason=HTTP_COOLDOWNS[key];remaining=until-time.monotonic()
+   if remaining>0:
+    record(0,reason,action='cooldown');raise DownloadError(source,0,'source cooldown ('+reason+')',remaining)
+   del HTTP_COOLDOWNS[key]
+ for attempt in range(1,HTTP_ATTEMPTS+1):
+  if parsed.hostname=='api.openf1.org':
+   pace=max(0.,2.1-(time.monotonic()-_LAST_REQUEST))
+   if waited+pace>HTTP_WAIT_BUDGET:stop(attempt-1,'retry wait budget exhausted')
+   if pace:time.sleep(pace);waited+=pace
+   _LAST_REQUEST=time.monotonic()
+  response=None;hint=0.;host=True
+  try:
+   response=requests.get(url,timeout=timeout)
+  except (requests.exceptions.SSLError,requests.exceptions.InvalidURL,requests.exceptions.InvalidSchema,requests.exceptions.MissingSchema,requests.exceptions.TooManyRedirects):raise
+  except (requests.ConnectionError,requests.Timeout,requests.exceptions.ChunkedEncodingError,requests.exceptions.ContentDecodingError) as exc:
+   reason=type(exc).__name__
+  else:
+   if response.status_code not in RETRY_STATUSES:
+    if attempt>1:record(attempt,f'HTTP {response.status_code}',action='response')
+    return response
+   reason=f'HTTP {response.status_code}';hint=retry_after_seconds(response.headers.get('Retry-After'),response.headers.get('Date')) or 0.
+   host=response.status_code not in {408,500}
+   response.close()
+  if attempt==HTTP_ATTEMPTS:stop(attempt,reason,hint,host)
+  delay=max(hint,random.uniform(.5,1.)*min(8.,2.**(attempt-1)))
+  if waited+delay>HTTP_WAIT_BUDGET:stop(attempt,reason+'; Retry-After/backoff exceeds remaining wait budget',hint,host)
+  record(attempt,reason,delay)
+  print(f'  {source}: {reason}; retry {attempt+1}/{HTTP_ATTEMPTS} in {delay:.1f}s.',flush=True)
+  time.sleep(delay);waited+=delay
 
 def save(path,data):
  path.parent.mkdir(parents=True,exist_ok=True)
@@ -21,7 +99,7 @@ def stamp(value):
  return t.tz_convert('UTC')
 
 class Client:
- def __init__(self,root,offline=False,refresh=False):self.root=Path(root)/'openf1';self.offline=offline;self.refresh=refresh;self.session_ends={};self.provenance={};self.cache_events=[]
+ def __init__(self,root,offline=False,refresh=False):self.root=Path(root)/'openf1';self.offline=offline;self.refresh=refresh;self.session_ends={};self.provenance={};self.cache_events=[];self.retry_events=[]
  def validate_record(self,record,url,params):
   if not isinstance(record,dict) or record.get('url')!=url:raise ValueError('OpenF1 cache identity mismatch')
   fetched=record.get('fetched_unix');data=record.get('data')
@@ -73,7 +151,6 @@ class Client:
  def register_session(self,session):
   if session.get('date_end'):self.session_ends[session['session_key']]=stamp(session['date_end']).timestamp()
  def get(self,endpoint,**params):
-  global _LAST_REQUEST
   url=requests.Request('GET','https://api.openf1.org/v1/'+endpoint,params=sorted(params.items())).prepare().url
   path=self.root/'http'/(hashlib.sha256(url.encode()).hexdigest()+'.json')
   cached=None
@@ -97,17 +174,13 @@ class Client:
    self.remember(cached,used=False)
   if self.offline:raise ValueError('OpenF1 response not cached: '+endpoint)
   print(f"  OpenF1 download: {endpoint} {params}", flush=True)
-  for attempt in range(4):
-   time.sleep(max(0,2.1-(time.monotonic()-_LAST_REQUEST)));_LAST_REQUEST=time.monotonic()
-   r=requests.get(url,timeout=(5,25))
-   if r.status_code==429:time.sleep(min(30,max(5,float(r.headers.get('Retry-After','10')))));continue
-   if r.status_code==404:
-    record=dict(url=url,fetched_unix=time.time(),data=[]);save(path,record);return self.remember(record)
-   r.raise_for_status();data=r.json()
-   if not isinstance(data,list) or not all(isinstance(x,dict) for x in data):raise ValueError('Invalid OpenF1 response')
-   if 'session_key' in params and any(x.get('session_key')!=params['session_key'] for x in data):raise ValueError('OpenF1 session identity mismatch')
-   record=dict(url=url,fetched_unix=time.time(),data=data);save(path,record);return self.remember(record)
-  raise ValueError('OpenF1 rate limit: retry later')
+  r=get_response(url,events=self.retry_events)
+  if r.status_code==404:
+   record=dict(url=url,fetched_unix=time.time(),data=[]);save(path,record);return self.remember(record)
+  r.raise_for_status();data=r.json()
+  if not isinstance(data,list) or not all(isinstance(x,dict) for x in data):raise ValueError('Invalid OpenF1 response')
+  if 'session_key' in params and any(x.get('session_key')!=params['session_key'] for x in data):raise ValueError('OpenF1 session identity mismatch')
+  record=dict(url=url,fetched_unix=time.time(),data=data);save(path,record);return self.remember(record)
  def schedule(self,year):
   meetings=self.get('meetings',year=year);sessions=self.get('sessions',year=year);events=[]
   self.session_ends.update({s['session_key']:stamp(s['date_end']).timestamp() for s in sessions if s.get('date_end')})
