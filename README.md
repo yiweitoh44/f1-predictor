@@ -29,6 +29,14 @@ Run `python -m pip install -r requirements.txt`, then
 `python predict_anytime.py --year 2026 --race Austin --session qualifying`.
 The first download can take several minutes; later runs reuse the cache.
 
+Repeat runs also reuse verified processed session summaries under
+`~/F1Data/cache/processed_sessions`, outside Git. Raw OpenF1 freshness checks
+still run. Changed source data, cutoff eligibility, entry lists, processing code
+or pace settings trigger processing again. Models and simulations still run.
+Use `--rebuild-summaries` to rebuild these summaries; add `--offline` to forbid
+downloads. `--refresh` refreshes sources and rebuilds summaries. Cache counts are
+recorded in `run_info.json` as `processed_session_cache`.
+
 See [START_HERE.txt](START_HERE.txt) for all commands, source cutoffs, derived lap
 quality, output columns, validation limits and remaining work. Simulation shares
 are not calibrated real-world probabilities. Section telemetry stays disabled.
