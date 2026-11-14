@@ -18,6 +18,7 @@ from urllib.parse import urljoin, urlsplit
 import numpy as np
 import pandas as pd
 import requests
+import openf1_data
 from pypdf.errors import PyPdfError
 
 PRIORITY = {'fia': 0, 'formula1': 1, 'openf1': 2}
@@ -209,7 +210,7 @@ def manual_grid(path, roster, cutoff):
 
 class GridStore:
     def __init__(self, root, offline=False, refresh=False):
-        self.root=Path(root)/'grids'; self.offline=offline; self.refresh=refresh; self.warnings=[]
+        self.root=Path(root)/'grids'; self.offline=offline; self.refresh=refresh; self.warnings=[]; self.retry_events=[]
 
     def get(self,url):
         path=self.root/'http'/(hashlib.sha256(url.encode()).hexdigest()+'.json')
@@ -225,15 +226,16 @@ class GridStore:
             return bytes.fromhex(saved['hex']),utc(saved['fetched_utc'])
         if self.offline: raise ValueError('grid source is not cached')
         try:
-            response=requests.get(url,timeout=(5,15)); response.raise_for_status()
+            response=openf1_data.get_response(url,timeout=(5,15),events=self.retry_events); response.raise_for_status()
             requested,received=urlsplit(url),urlsplit(response.url)
             fia_catalog=(requested.hostname==received.hostname=='www.fia.com'
                          and requested.path.startswith('/documents') and received.path.startswith('/documents'))
             if response.url!=requests.Request('GET',url).prepare().url and not fia_catalog:
                 raise ValueError('Grid source redirected to a different resource.')
-        except requests.RequestException:
+        except openf1_data.DownloadError:
             if saved:
-                self.warnings.append('Grid download failed; checking cached response: '+url)
+                self.warnings.append('Document download exhausted retries; using cached response from '+saved['fetched_utc']+
+                                     '; newer revisions could not be checked: '+url)
                 return bytes.fromhex(saved['hex']),utc(saved['fetched_utc'])
             raise
         if len(response.content)>10_000_000: raise ValueError('Grid response unexpectedly large.')

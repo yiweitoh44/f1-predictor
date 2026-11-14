@@ -1567,6 +1567,7 @@ def run(args):
         sprint_specialist=sprint_active, race_specialist=race_active) for d in drivers])
     grid_record = None
     grid_warnings = []
+    grid_retry_events = []
     grid_mode = getattr(args, 'grid_source', 'auto')
     qualifying_code = 'Q' if target == 'R' else 'SQ'
     if args.grid and (target not in RACE_TYPES or qualifying_code not in current):
@@ -1579,6 +1580,7 @@ def run(args):
             grid_record = grid_store.resolve(args.year, event, target, drivers, now,
                 live=not args.as_of and pd.Timestamp.now(tz='UTC') < target_start)
             grid_warnings = grid_store.warnings
+            grid_retry_events = getattr(grid_store,'retry_events',[])
         if grid_record:
             grid_sources.apply_grid(inputs, drivers, grid_record)
             known_grid = {r['driver'] for r in grid_record['rows']}
@@ -1918,6 +1920,8 @@ def run(args):
                 "offline": args.offline,
                 "summary_schema": SUMMARY_SCHEMA,
                 "processed_session_cache": getattr(store,"processed_stats",None),
+                "download_retries": (getattr(schedule_client,'retry_events',[])+getattr(store.client,'retry_events',[])
+                    +getattr(entry_store,'retry_events',[])+grid_retry_events),
                 "data_provider": "OpenF1; no FastF1 runtime or timing-cache dependency",
                 "lap_quality": "derived OpenF1 checks, not an official IsAccurate flag; see lap_quality.csv",
                 "unavailable_sessions": store.unavailable,
@@ -2014,7 +2018,7 @@ def main():
         parser.error("Use between 100 and 1000000 simulations.")
     try:
         run(args)
-    except (ValueError, KeyError, FileNotFoundError) as exc:
+    except (ValueError, KeyError, FileNotFoundError, openf1_data.requests.RequestException) as exc:
         raise SystemExit(f"Stopped: {exc}") from exc
 
 

@@ -235,12 +235,48 @@ The normal prediction command automatically uses eligible summaries.
 To force processing again while retaining raw downloads:
   python predict_anytime.py --year 2026 --race Singapore --session race --rebuild-summaries
 For a rebuild without downloads, add --offline. --refresh refreshes sources and
-also bypasses processed summaries; with --offline it rebuilds from local raw data.
+also bypasses processed summaries. The CLI rejects --refresh with --offline;
+use --offline --rebuild-summaries to process local raw data again.
 run_info.json / processed_session_cache reports hits, misses, writes, skipped
 unsupported processing functions and cache errors. Optional weather-fetch errors
 are not persisted as successful summaries. Cache write failures do not stop a
 usable prediction. Keep raw cache/openf1 for offline use; processed summaries
 are disposable and cannot replace it. No new dependencies or command required.
+
+TEMPORARY DOWNLOAD FAILURES
+OpenF1, FIA entry/grid documents and F1 grid pages share bounded GET retries.
+Temporary connection/read failures and HTTP408/429/500/502/503/504 (plus common
+520-524 gateway errors) retry with increasing waits and jitter. Four attempts
+include the first request; there is no extra wait after the final attempt.
+OpenF1's existing minimum request spacing is retained, including grid requests.
+
+Retry-After seconds and HTTP dates are respected, including the server's Date
+when it indicates clock skew. Invalid hints use ordinary bounded backoff. Each
+download allows up to60 seconds of total retry/pacing sleep. If a valid server
+wait would exceed that budget, the download stops instead of retrying early.
+Connection/read inactivity timeouts still apply separately;60 seconds is NOT
+a total command/download deadline. A server that keeps sending bytes can take
+longer. Persistent failures trigger a short cooldown so historical loading does
+not repeatedly hammer an unavailable source; other origins remain available.
+
+Authentication/permission errors and invalid TLS/URLs are not retried or bypassed.
+Invalid JSON, wrong-session data and unreadable documents still fail validation.
+An unavailable required lap/tyre/flag source cannot supply validated pace or use
+an old processed summary. Weather failure retains valid pace with a warning.
+Failed OpenF1 downloads do not overwrite good raw data or silently substitute
+expired data. Rerun later, or use --offline if you deliberately want local data.
+
+Dated saved grid/entry documents can still pass the existing identity/time gates.
+After a transient document-download outage, cached raw documents keep their
+original observation time and warn that newer revisions could not be checked.
+HTTP401/403 does not return an old raw response as a successful new download.
+Normal source preference, cutoff rules, roster/grid fallbacks and --roster/--grid
+overrides are retained. Schedule failure stops with a plain message.
+
+run_info.json / download_retries records retry reasons, attempts, waits and
+cooldowns; grid_details / roster_selection retain cached-source warnings.
+Healthy downloads leave the retry list empty. No new command or dependency is
+needed. Prediction tables, weights, models and section exclusion are unchanged.
 
 lap_quality.csv also shows the reported stint, initial tyre age, derived tyre
 life, freshness assumption and elapsed seconds from scheduled session start.
