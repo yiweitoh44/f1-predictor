@@ -37,6 +37,13 @@ Use `--rebuild-summaries` to rebuild these summaries; add `--offline` to forbid
 downloads. `--refresh` refreshes sources and rebuilds summaries. Cache counts are
 recorded in `run_info.json` as `processed_session_cache`.
 
+Temporary connection failures and service errors now retry automatically for
+OpenF1, FIA and F1 document downloads. Each download has at most four attempts
+and 60 seconds of retry/pacing waits, alongside its connection/read timeouts.
+Longer server wait instructions stop the download with a clear message.
+Persistent outages briefly pause further requests. Offline mode still forbids
+downloads; retries and any cached-document warnings appear in `run_info.json`.
+
 See [START_HERE.txt](START_HERE.txt) for all commands, source cutoffs, derived lap
 quality, output columns, validation limits and remaining work. Simulation shares
 are not calibrated real-world probabilities. Section telemetry stays disabled.
