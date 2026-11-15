@@ -1346,3 +1346,34 @@ stages (Sepang and Austin), with no earlier evaluation gain. This limited,
 extensively inspected evidence does not justify adding the adaptive selection
 system. It is recorded as a promising retrospective result, not called worse or
 impossible. Race/Sprint/SQ scoring is unchanged. No new command or dependency.
+
+ITEM 2 — ASTRA EXPANDED LAP-MATCHING REVIEW (15 NOVEMBER 2026)
+Current matching is retained. The review compares 22 alternatives plus the
+baseline: 1,449 full predictor replays across 63 saved stages per setting.
+These cover 19 Race, 19 Q, six Sprint and six SQ forecasts, 12 separate after-FP2
+Q stages and one Brazil race diagnostic. Repeated stages are not extra races.
+
+Methods include optimal one-to-one pairing, exact/near tyre-age comparisons,
+connected and robust comparisons, extra support for indirect comparisons,
+overlapping time windows with unique lap counts, and regularized adjustments
+for observed session time and tyre age. Short-run-only and whole-compound
+fallback variants test whether existing long-run evidence can be preserved.
+No fuel load, engine setting or run programme is assumed known.
+
+All settings use the same source hashes, cutoffs, grids and lap-quality decisions.
+Distinct training inputs are fitted through the existing native models and
+specialists. Discovery rounds 1–12 and later rounds 13–18 are assessed separately
+by format/stage; Mexico and Brazil remain diagnostics. The original Mexico
+forecasts stay in the official benchmark. Section pace stays out of training.
+
+No alternative earns adoption across those checks. One SQ overlap treatment
+keeps poles at 3/6, raises top-three matches 10/18 -> 11/18 and lowers mean places
+out 1.9091 -> 1.8788 across three complete fields. Earlier aggregate metrics are
+unchanged, with one correct pole gained and another lost; the net improvement
+comes from one later SQ event. This is a small retrospective signal, not enough
+evidence to select a new SQ policy using that later outcome.
+
+Official first picks remain Race 16/19, Q 12/19, Sprint 6/6 and SQ 3/6.
+Mean places out remains 3.3158/1.9318/0.9091/1.9091 respectively, measured on
+19/16/1/3 complete fields. In particular, Sprint ranking error covers one event.
+No production Python, weights, dependencies, commands or table columns change.
