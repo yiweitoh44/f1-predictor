@@ -357,3 +357,17 @@ adaptive follow-up improved two after-FP2 podium comparisons, but did not improv
 pole picks or the main 19-event results. Its gains appeared only in the later
 sample, so the additional selection system was not adopted. These repeatedly
 inspected historical cases do not establish future accuracy.
+
+## Lap-matching review
+
+The expanded Astra review retained the current lap matching after comparing
+22 alternatives with the baseline across 63 saved forecast stages each.
+These covered optimal lap pairing, connected and robust comparisons, overlapping
+time windows, observed time/tyre-age adjustments and conservative fallbacks.
+The full predictor was rerun for Race, qualifying, Sprint and Sprint qualifying.
+
+No alternative earned adoption under the earlier/later evaluation checks.
+One SQ treatment kept poles at 3/6 and improved top-three matches from 10/18 to
+11/18, but the net gain came from one later event; earlier pole picks traded
+one success for another. That limited result does not justify a separate SQ
+matching policy. Scoring, lap-quality rules and the saved benchmark are unchanged.
