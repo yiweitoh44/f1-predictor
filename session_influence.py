@@ -61,6 +61,7 @@ SPRINT_MODEL_COLUMNS = (SPRINT_BASE_COLUMNS + SPRINT_HISTORY_COLUMNS
                        + SPRINT_PACE_COLUMNS + SPRINT_CONTEXT_COLUMNS)
 SPRINT_FRONT_SIZE = 8
 SPRINT_LEARNED_SHARE = .5
+SPRINT_TRAINING_SEEDS = (0, 42, 101)
 
 # GP race correction combines a small score model and a long-run model. Both
 # supply ordering evidence only: the existing field score values are retained.
@@ -256,6 +257,9 @@ def sprint_specialist_policy(active=False, trained=False):
         score_rule='specialist reorders only the base top eight; same score multiset and base sigma',
         model_features=list(SPRINT_MODEL_COLUMNS) if active else [],
         learned_share=SPRINT_LEARNED_SHARE if active and trained else 0.,
+        native_models=len(SPRINT_TRAINING_SEEDS) if active and trained else 0,
+        training_seeds=list(SPRINT_TRAINING_SEEDS) if active and trained else [],
+        native_prediction='mean of individually clipped native predictions; fixed training seeds',
         history='auxiliary Sprint anchor uses driver mean over the last two earlier Sprint weekends, decayed by calendar rounds; falls back to the original GP/Sprint history when unavailable',
         separate_history='driver/team mean and driver best from last three earlier Sprint and GP weekends; no current-weekend history',
         practice='existing FP1 short/long comparisons; minimum two matched laps per compound and four comparison drivers; unknown remains missing',
