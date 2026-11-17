@@ -156,8 +156,9 @@ See START_HERE for the policy and saved-model formula.
 
 ## Sprint winner correction
 
-After FP1 and SQ have loaded, a separate Sprint model reorders the main model's
-predicted top eight, keeping the same score values and simulation spread. It uses
+After FP1 and SQ have loaded, a Sprint specialist averages three native models
+to reorder the main model's predicted top eight, keeping the same score values
+and base simulation spread. It uses
 earlier Sprint/GP form, SQ performance, the starting grid and existing FP1 pace
 comparisons. Early-season runs use an evidence-only version. Before FP1/SQ, the
 existing policy remains active.
@@ -170,6 +171,8 @@ simulation seeds. Six inspected events and one complete ranking are limited
 retrospective evidence, not a future success-rate estimate.
 
 Active saved forecasts include `sprint_model.json` and `sprint_front.csv`.
+For trained Sprints, the model JSON contains all three native members and their
+averaging formula; early evidence files remain explicitly untrained.
 GP race, qualifying and SQ predictions retain their existing models. Commands,
 dependencies, lap-quality checks and the two-lap comparison rule are unchanged.
 See START_HERE for the auxiliary model and validation details.
@@ -371,3 +374,18 @@ One SQ treatment kept poles at 3/6 and improved top-three matches from 10/18 to
 11/18, but the net gain came from one later event; earlier pole picks traded
 one success for another. That limited result does not justify a separate SQ
 matching policy. Scoring, lap-quality rules and the saved benchmark are unchanged.
+
+## Expanded specialist review
+
+The November 2026 item 3 review retains the qualifying, SQ and GP race models.
+Sprint now averages native regressions trained with three fixed seeds, reducing
+dependence on one training draw. Inputs, the 50/50 evidence/model blend, the
+top-eight limit and early fallback are unchanged. Chronological backtests and
+the existing Sprint residual adjustment use the same averaged specialist.
+
+Across the same six Sprint forecasts, winners stay **6/6**, podium-driver matches
+stay **14/18**, and average places out improves **0.909 → 0.818** on the one
+complete field, Silverstone. Separate three- and five-member groups retain that
+result. This is a small ranking improvement with limited coverage, not evidence
+of better future winner accuracy. Training fits three small specialist models
+instead of one; commands and dependencies are unchanged.

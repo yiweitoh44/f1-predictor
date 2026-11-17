@@ -669,24 +669,22 @@ def fit(frame, columns):
     if race_model:
         context_columns = {c for c in columns if c not in influence.RACE_SPECIALIST_BASE_COLUMNS
                            and not c.endswith(('_score', '_gap'))}
-    booster = xgb.train(
-        {
-            "objective": "binary:logistic" if pole_model else "reg:squarederror",
-            "max_depth": (4 if race_score_model else 2 if race_long_model else
-                          3 if pole_model or sprint_model else influence.SPRINT_QUALIFYING_MAX_DEPTH if sq_model else
-                          influence.QUALIFYING_PRACTICE_MAX_DEPTH if practice_model else 2),
-            "monotone_constraints": tuple(0 if c in context_columns else 1 for c in columns),
-            "eta": 0.04,
-            "subsample": 0.85,
-            "colsample_bytree": 0.85,
-            "lambda": 3.0,
-            "seed": 42,
-            "nthread": 2,
-            "verbosity": 0,
-        },
-        training,
-        num_boost_round=200,
-    )
+    parameters = {
+        "objective": "binary:logistic" if pole_model else "reg:squarederror",
+        "max_depth": (4 if race_score_model else 2 if race_long_model else
+                      3 if pole_model or sprint_model else influence.SPRINT_QUALIFYING_MAX_DEPTH if sq_model else
+                      influence.QUALIFYING_PRACTICE_MAX_DEPTH if practice_model else 2),
+        "monotone_constraints": tuple(0 if c in context_columns else 1 for c in columns),
+        "eta": 0.04,
+        "subsample": 0.85,
+        "colsample_bytree": 0.85,
+        "lambda": 3.0,
+        "nthread": 2,
+        "verbosity": 0,
+    }
+    seeds = influence.SPRINT_TRAINING_SEEDS if sprint_model else (42,)
+    boosters = [xgb.train(parameters | {"seed": seed}, training,
+                          num_boost_round=200) for seed in seeds]
 
     class NativeModel:
         def predict(self, data):
@@ -694,7 +692,9 @@ def fit(frame, columns):
                 data[columns].to_numpy(dtype=np.float32),
                 feature_names=columns,
             )
-            learned = np.clip(booster.predict(inputs), 0., 1.)
+            predictions = [np.clip(booster.predict(inputs), 0., 1.)
+                           for booster in boosters]
+            learned = predictions[0] if len(predictions) == 1 else np.mean(predictions, axis=0)
             if pole_model:
                 learned = (pd.Series(learned).rank(method='average').to_numpy()-1) / max(1, len(data)-1)
             anchor = ('pole_influence_anchor' if pole_model else
@@ -704,7 +704,18 @@ def fit(frame, columns):
                     + learned_share * learned)
 
         def save_model(self, path):
-            booster.save_model(str(path))
+            if len(boosters) == 1:
+                boosters[0].save_model(str(path))
+            else:
+                # Keep every fitted native member in the same hashed artifact.
+                # Clip each member before averaging, then apply the usual anchor.
+                Path(path).write_text(json.dumps(dict(
+                    schema=1, model_type='native_xgboost_ensemble',
+                    feature_names=list(columns), training_seeds=list(seeds),
+                    aggregation='mean_of_clipped_predictions', clip=[0., 1.],
+                    anchor_column='sp_influence_anchor', learned_share=learned_share,
+                    members=[json.loads(booster.save_raw(raw_format='json'))
+                             for booster in boosters])), encoding='utf-8')
 
     return NativeModel()
 

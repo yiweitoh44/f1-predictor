@@ -748,8 +748,8 @@ outside Git. Commands and dependencies are unchanged.
 
 SPRINT WINNER CORRECTION
 
-Active only for Sprint with both FP1 and SQ loaded. A separate native regression
-model orders the existing base top eight; it cannot promote an outside driver.
+Active only for Sprint with both FP1 and SQ loaded. Three native regressions
+are averaged to order the existing base top eight; they cannot promote an outside driver.
 Those same eight score values are reassigned in the specialist's order. Remaining
 drivers' scores, the base score distribution and base simulation spread are retained.
 Other requested session modes and earlier availability stages retain their models.
@@ -770,7 +770,9 @@ it retains the original GP/Sprint historical blend. Missing sources redistribute
 their budget. This changes only the auxiliary anchor, not the base field model.
 
 With four usable earlier weekends, its score is 50% sp_influence_anchor plus
-50% clipped native prediction. Native regression uses depth three, the existing
+50% of the mean of three individually clipped native predictions. Training seeds
+are fixed at 0, 42 and 101; no seed is selected during prediction. Each native
+regression uses depth three, the existing
 six-round training half-life and original per-weekend training totals. GP/Sprint
 training is pooled with a format flag. Current-weekend history never enters;
 current SQ enters only as already-completed pre-Sprint evidence. During the
@@ -782,6 +784,12 @@ traffic, strategy, retirement-cause or section-telemetry change is introduced.
 run_info.json and influence_policy.json record sprint_specialist, its actual
 columns, training status, blend and limits. Active runs save sprint_model.json
 and sprint_front.csv; early evidence files explicitly record trained=false.
+For trained Sprints, sprint_model.json is a schema-1 native_xgboost_ensemble
+container: members holds three complete native XGBoost JSON models, alongside
+feature_names, training_seeds, clip, aggregation, anchor_column and learned_share.
+To reproduce it, load each member into a native Booster, clip each prediction
+to [0,1], average them, then apply the recorded anchor blend. The single native
+base model.json and the other formats' model files retain their existing format.
 The audit lists driver, base/specialist/final scores and selected membership.
 Immutable forecast copies include both files and their hashes. Inactive runs
 ignore stale specialist files left in latest. Base model.json remains separate.
@@ -1377,3 +1385,26 @@ Official first picks remain Race 16/19, Q 12/19, Sprint 6/6 and SQ 3/6.
 Mean places out remains 3.3158/1.9318/0.9091/1.9091 respectively, measured on
 19/16/1/3 complete fields. In particular, Sprint ranking error covers one event.
 No production Python, weights, dependencies, commands or table columns change.
+
+ITEM 3 — EXPANDED ASTRA SPECIALIST REVIEW (17 NOVEMBER 2026)
+The review covers the SQ model and its earlier Q/Sprint/Race specialist transfers.
+It compares conditional winner/top-three objectives, pairwise ranking, regularized
+and robust fits, shared versus format-specific learning, support-based training
+weights, early SQ warmup, fixed-seed ensembles and conservative model blends.
+The saved current baseline is reproduced before comparison. Sources, cutoffs,
+lap admission, feature eligibility and original Mexico forecasts stay fixed.
+
+Selected: the Sprint-only three-member native average described above. Across
+the six same-stage Sprint forecasts, winners remain 6/6 and podium matches 14/18.
+Average places out falls 0.9091 -> 0.8182 on the one complete field (Silverstone).
+Disjoint three-member and five-member checks retain those metrics. Changing
+training weights also showed a gain, but lost a winner under a paired seed check.
+Other blends tie the selected ranking metrics without improving upon them.
+
+GP Race remains 16/19 winners, Q 12/19 poles and SQ 3/6 poles. Their ranking
+errors remain 3.3158, 1.9318 and 1.9091 over 19, 16 and three complete fields.
+The early-SQ warmup trials gain one Miami podium match, but affect only that
+one event and lack its complete classification for ranking validation. They do
+not justify lowering the existing four-weekend training safeguard. No winning
+SQ/pole improvement is claimed. Historical cases are extensively inspected,
+not an untouched future test. Section pace remains excluded from training.
