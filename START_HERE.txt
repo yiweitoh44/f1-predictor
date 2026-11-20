@@ -1408,3 +1408,25 @@ one event and lack its complete classification for ranking validation. They do
 not justify lowering the existing four-weekend training safeguard. No winning
 SQ/pole improvement is claimed. Historical cases are extensively inspected,
 not an untouched future test. Section pace remains excluded from training.
+
+ITEM 3 — DEDICATED RACE REVIEW (20 NOVEMBER 2026)
+Keep the current Race model; no command, weight, feature or dependency changes.
+The review compared 84 training configurations and model-combination/ordinary-
+weekend alternatives on the same pre-race data. None beat 16/19 Race winners.
+Seventy policies passed the first forecast checks; 69 then lost winner or podium
+matches in at least one rolling report. Four selectors using only earlier tests
+also failed to improve the headline results.
+
+The remaining candidate kept 16/19 winners and 37/57 podium matches. Replay
+ranking error improved only 3.3110 -> 3.3062, from one Monaco ordering change;
+four training seeds retained the gain and a fifth tied. Later races did not
+improve. Retain the simpler current model rather than add several model fits
+for that single historical change. Rolling reports have incomplete published
+fields, so their full-field error remains unavailable; the separate 19 forecast
+comparisons have complete fields. Missing metrics are not treated as wins.
+
+The official saved benchmark remains 16/19 winners, 37/57 podium matches and
+3.3158 places out, retaining the original Mexico forecast. Current-code replay
+error differs slightly because it is a different comparison; do not mix them.
+Only the Race part of the dedicated item-3 review is closed here. Qualifying and
+SQ remain separate reviews. Section pace is still excluded from all training.

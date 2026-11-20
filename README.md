@@ -389,3 +389,21 @@ complete field, Silverstone. Separate three- and five-member groups retain that
 result. This is a small ranking improvement with limited coverage, not evidence
 of better future winner accuracy. Training fits three small specialist models
 instead of one; commands and dependencies are unchanged.
+
+### Dedicated Race review
+
+The 20 November 2026 review retains the existing GP race model. It compared
+84 training configurations, different ways to combine the models, and extensions
+to ordinary weekends using the same frozen pre-race evidence. None improved
+the **16/19 winner picks**. Candidates with more podium matches either worsened
+other ranking checks or lacked an improvement in the earlier comparison period.
+
+The sole candidate that also preserved all rolling winner/podium reports kept
+**37/57 podium matches** and reduced replay error from **3.311 to 3.306 places**.
+That gain came entirely from one Monaco ordering change, held with four training
+seeds and tied with a fifth, and did not improve the later races. It does not
+justify adding several ordinary-weekend model fits. The production model,
+commands and dependencies remain unchanged. The saved as-used benchmark stays
+**3.3158 places out**; it preserves the original Mexico forecast and is distinct
+from the current-code replay comparison. These are inspected historical results,
+not estimates of future accuracy.
