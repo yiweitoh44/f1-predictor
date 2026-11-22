@@ -1444,3 +1444,19 @@ none passes the earlier/later improvement checks. No rejected candidate is
 installed. Saved original Mexico forecasts and section-pace exclusion remain.
 Sprint, Race and GP qualifying now have their dedicated item-3 Astra reviews;
 SQ remains pending.
+
+
+ITEM 3 — DEDICATED SQ REVIEW (22 NOVEMBER 2026)
+The SQ review is complete; retain the current model and commands.
+Results: 3/6 poles, 10/18 top-three matches, 1.9091 places out on three complete
+fields. Six SQ weekends remain a small, repeatedly inspected sample.
+
+The new review tried 32 model configurations and 577 policy settings including
+baseline. The strongest initially acceptable candidate keeps three poles and
+gains one podium match, but that extra match does not survive other fixed seed
+groups. The disjoint group also loses a podium match in four rolling reports.
+GP-to-SQ adjustment, alternative objectives and disagreement weighting provide
+no supported additional pole advantage. No experimental model is installed.
+
+The dedicated Sprint, Race, GP qualifying and SQ Astra reviews under item 3 are
+now complete. The results and raw-data/section exclusions are retained.
