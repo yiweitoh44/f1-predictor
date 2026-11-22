@@ -425,3 +425,19 @@ reaches 32/57 matches and 1.9261 places out but loses three pole picks (12/19 to
 9/19). No candidate improves the required earlier/later comparisons without a
 trade-off. Prediction code, commands and dependencies are unchanged. These are
 repeatedly inspected historical cases, not a future accuracy estimate.
+
+
+### Dedicated Sprint qualifying review
+
+The 22 November 2026 review retains the current SQ model: **3/6 poles**,
+**10/18 top-three matches**, and **1.9091 places out** on three complete fields.
+New approaches included a GP qualifying model adjusted using earlier SQ errors,
+ensemble-disagreement weighting, cumulative finishing bands, pole/ranking targets
+and conservative combinations. No candidate improved the pole count.
+
+A gradual early-season transition plus a three-model ensemble reaches 11/18
+top-three matches and 1.8788 places out. The extra podium match disappears with
+other fixed seed groups. Their ranking gains remain confined to later weekends,
+and a disjoint seed group loses a top-three match in four rolling reports. The
+disagreement rule adds no measured benefit over the simpler ensemble. These
+limited retrospective gains do not justify replacing the current model.
