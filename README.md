@@ -407,3 +407,21 @@ commands and dependencies remain unchanged. The saved as-used benchmark stays
 **3.3158 places out**; it preserves the original Mexico forecast and is distinct
 from the current-code replay comparison. These are inspected historical results,
 not estimates of future accuracy.
+
+
+### Dedicated qualifying review
+
+The 22 November 2026 review retains the qualifying specialist. Across 19 saved
+qualifying forecasts it keeps **12/19 poles**, **30/57 top-three matches**, and
+**1.9318 average places out** on 16 complete fields. The review also checks
+12 earlier forecasts made after FP2, preserving their separate results.
+
+The dedicated work compared 44 training configurations and 553 policy settings,
+including controls, and reused 78 archived settings without refitting them.
+Alternatives cover Q-only/shared training, pole-example weighting, depth, fixed
+ensembles, finishing-band and regression targets, pairwise/NDCG ranking, front
+sizes and conservative combinations. The strongest new podium-focused combination
+reaches 32/57 matches and 1.9261 places out but loses three pole picks (12/19 to
+9/19). No candidate improves the required earlier/later comparisons without a
+trade-off. Prediction code, commands and dependencies are unchanged. These are
+repeatedly inspected historical cases, not a future accuracy estimate.
