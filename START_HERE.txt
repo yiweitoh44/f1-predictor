@@ -1028,6 +1028,31 @@ new prospective forecast. Verstappen still improves only P14 -> P13 versus actua
 P2, while Leclerc worsens P7 -> P5 versus actual P8. Recovery remains imperfect.
 Brazil was not added to the 19-GP headline totals or used to retune the rule.
 
+FURTHER RECOVERY REVIEW — 23 NOVEMBER 2026
+The existing bounded recovery adjustment remains active; no additional model
+was adopted. New work tested learned allowance strength, evidence agreement,
+driver-pair corrections around current predictions, and constrained native
+robust/ordinal ensembles using the strength of cars ahead. Separate penalty-only
+and poor-qualifying applications were also evaluated.
+
+All 19 GP and six Sprint cases were compared with the same frozen inputs.
+The best recovery-focused trial kept GP winners 16/19 and podium matches 37/57.
+Penalised-driver error improved 2.4348 -> 2.1304 over 23 records, but total replay
+error improved only 3.3110 -> 3.3062, entirely from the diagnostic Mexico replay.
+Three model-seed groups retained a similar penalty-group improvement; 105 rolling
+Race reports had no aggregate regression. Nevertheless, the gains varied by
+weekend and the estimated range of the penalty benefit included a loss.
+Restricting that trial to penalties worsened total replay error to 3.3206;
+choosing alternatives using only earlier results also worsened total error.
+Full Sprint posterior refits tied or worsened the current 6/6 winners, 14/18
+podium matches and 0.8182 places out (one complete field).
+
+Current saved benchmark: GP 16/19, 37/57, 3.3158 places out over 19 fields;
+Sprint 6/6, 14/18, 0.8182 over one field. The saved GP figure preserves the
+original Mexico forecast and therefore differs from a new Mexico replay.
+Qualifying/SQ and all saved benchmark files remain unchanged. The research,
+including the promising alternative and its limitations, is retained outside Git.
+
 
 HISTORICAL VALIDATION AND SCORING — FINAL-SCOPE ITEM 5
 

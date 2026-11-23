@@ -310,6 +310,27 @@ The recent Sprint calibration remains enabled; qualifying and SQ keep their
 existing methods. Results are experimental and selected historical comparisons
 cannot establish future accuracy.
 
+### Further recovery improvement review
+
+The 23 November review retains the existing recovery rule. New experiments
+learned the size of the allowance from evidence agreement, fitted corrections
+to driver-pair comparisons, and extended robust/ordinal models with the strength
+of cars ahead. These used earlier weekends only, bounded changes, native model
+ensembles and separate confirmed-penalty/poor-qualifying applications.
+
+The strongest recovery-focused trial kept 16/19 Race winners and 37/57 podium
+matches. Its penalised-driver error fell from 2.43 to 2.13 places across 23
+driver-event records, consistently across three seed groups. However, the
+whole-field replay gain was only 3.3110 to 3.3062 places and came entirely from
+the diagnostic Mexico replay; some other weekends worsened. Penalty-only use
+and selection based on earlier results worsened overall ranking error. Fully
+refitted Sprint trials tied or worsened the current 6/6, 14/18, 0.8182 result
+(ranking error is measurable on one complete Sprint field).
+
+No new prediction code is enabled. The original Mexico forecast and the retained
+benchmark remain unchanged. These are repeatedly inspected historical comparisons,
+not evidence that recovery is solved or that future accuracy is guaranteed.
+
 ### Confirmed entrants and substitutions
 
 Automatic roster selection now checks dated FIA entry lists before the prediction
