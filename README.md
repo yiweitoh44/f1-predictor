@@ -241,14 +241,33 @@ Saved forecasts with qualifying, Sprint or GP specialist models can now be
 scored correctly. Their active model/audit files are required and checked for
 changes. Old forecasts remain supported. Predictions, simulation shares and
 the current retained 50-event benchmark are unchanged by scoring: **GP 16/19, qualifying 12/19,
-Sprint 5/6, SQ 3/6**. Reporting corrections can change internal ranking figures
+Sprint 6/6, SQ 3/6**. Reporting corrections can change internal ranking figures
 or make them unavailable when published positions are incomplete.
 
-Fresh OpenF1 outcomes, 12 official F1 result pages and eight final FIA
-classifications agree on their published numeric positions. They do not supply
-additional complete Sprint/SQ numeric fields: NC/DNS/DQ entries are not assigned
-invented positions. The retained benchmark still has one complete Sprint field
-and two complete SQ fields. See START_HERE for scoring commands and limits.
+Earlier OpenF1, official F1 and FIA checks agree on published numeric positions.
+NC/DNS/DQ entries are not assigned invented positions. With the subsequent roster
+correction, the retained benchmark has one complete Sprint field and three SQ
+fields. See START_HERE for scoring commands and limits.
+
+Saved-result scoring also evaluates the simulation probabilities: how much share
+the actual winner received, winner Brier error and top-three membership Brier
+error. Lower errors are better; equal shares provide a simple reference. Known
+winner/podium identities suffice without complete tail classifications. A missing
+forecast entrant receives zero share, rather than being dropped from scoring.
+Zero sampled wins produce an explicitly infinite log loss in the evaluation
+record; shares are not silently smoothed. Older files without shares retain
+their position scoring and report probability scoring as unavailable.
+
+The November validation review rescored all 50 saved forecasts. Winner Brier
+errors are Race **0.600**, qualifying **0.751**, Sprint **0.387**, SQ **0.815**,
+versus **0.955** for equal shares on these fields. This weak reference does not
+establish an advantage over useful alternatives: on 13 matching Race cases,
+an earlier-fitted grid-rank probability benchmark scores **0.481** versus the
+model's **0.547**. The small inspected sample does not establish either method's
+future superiority. Of the 50 retained cases, 48 are historical replays and two
+are original Mexico forecasts saved before their sessions. Keep that distinction
+when interpreting hit rates. Probability scoring changes no prediction or
+uncertainty setting and appears only in the existing post-session scoring flow.
 
 ## Simulation uncertainty
 

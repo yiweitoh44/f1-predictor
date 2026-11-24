@@ -75,6 +75,60 @@ def utc(value):
     return result.tz_convert('UTC')
 
 
+def probability_metrics(simulation, predicted, actual):
+    """Score saved simulation shares against already validated outcome rows.
+
+    The winner score is the sum of squared categorical errors (range 0..2).
+    Top-three membership uses a sum of binary squared errors (range 0..6).
+    Missing tail classifications do not prevent either score when P1/P2/P3
+    identities are known. A missing forecast entrant gets zero probability;
+    never renormalize over the intersection with the published results.
+    """
+    if simulation is None or 'first_pct' not in simulation:
+        return dict(available=False, reason='Saved first-place simulation shares unavailable.')
+    if 'driver' not in simulation:
+        raise ValueError('Saved probability table needs driver identities.')
+    simulation = simulation.copy()
+    simulation['driver'] = simulation.driver.astype(str).str.strip().str.upper()
+    if simulation.driver.duplicated().any() or set(simulation.driver) != set(predicted.driver):
+        raise ValueError('Saved probability drivers must match the complete forecast roster.')
+    simulation = simulation.set_index('driver').loc[predicted.driver]
+    first = pd.to_numeric(simulation.first_pct, errors='coerce').to_numpy(float) / 100.
+    if (not np.isfinite(first).all() or np.any(first < 0) or np.any(first > 1)
+            or not np.isclose(first.sum(), 1., rtol=0., atol=1e-8)):
+        raise ValueError('Saved first-place shares must be finite, within 0..100 and sum to 100.')
+    n = len(first)
+    winners = actual.loc[actual.position.eq(1), 'driver'].tolist()
+    result = dict(available=True, basis='saved Monte Carlo shares; not calibrated real-world probabilities',
+                  forecast_drivers=n, winner_eligible=bool(winners), top3_eligible=False)
+    if winners:
+        winner = winners[0]
+        target = predicted.driver.eq(winner).to_numpy(float)
+        outside = float(winner not in set(predicted.driver))
+        chance = float(first @ target)
+        result.update(actual_winner_share=chance,
+                      winner_brier_sum=float(np.sum((first-target)**2) + outside),
+                      uniform_winner_brier_sum=float(np.sum((np.full(n, 1./n)-target)**2) + outside),
+                      winner_log_loss=float(-np.log(chance)) if chance > 0 else None,
+                      winner_log_loss_infinite=chance == 0,
+                      actual_winner_missing_from_forecast=bool(outside))
+    if 'top3_pct' in simulation:
+        top = pd.to_numeric(simulation.top3_pct, errors='coerce').to_numpy(float) / 100.
+        if (not np.isfinite(top).all() or np.any(top < 0) or np.any(top > 1)
+                or np.any(top + 1e-8 < first)
+                or not np.isclose(top.sum(), 3., rtol=0., atol=1e-8)):
+            raise ValueError('Saved top-three shares must be valid marginals and sum to 300.')
+        if {1, 2, 3}.issubset(actual.position):
+            podium = set(actual.loc[actual.position.le(3), 'driver'])
+            target = predicted.driver.isin(podium).to_numpy(float)
+            outside = len(podium-set(predicted.driver))
+            result.update(top3_eligible=True,
+                          top3_brier_sum=float(np.sum((top-target)**2) + outside),
+                          uniform_top3_brier_sum=float(np.sum((np.full(n, 3./n)-target)**2) + outside),
+                          podium_drivers_missing_from_forecast=outside)
+    return result
+
+
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -208,10 +262,13 @@ def score(folder, actual_file, now=None):
         result['mean_rank_error'] = float((joined.predicted_position - joined.position).abs().mean())
     else:
         result['reason'] = 'Driver fields or published positions are incomplete; full-field ranking error omitted.'
+    simulation = (pd.read_csv(io.BytesIO(saved['simulation_details.csv']))
+                  if 'simulation_details.csv' in saved else None)
+    result['probability_scores'] = probability_metrics(simulation, predicted, actual)
     # Leave the saved copy untouched. Different outcomes/revisions get distinct records.
     parent = folder.parent.parent / 'evaluations'
     parent.mkdir(parents=True, exist_ok=True)
     destination = parent / (folder.name + '_' + result['actual_file_sha256'][:16]
                             + '_' + result['scoring_code_sha256'][:12] + '.json')
-    destination.write_text(json.dumps(result, indent=2), encoding='utf-8')
+    destination.write_text(json.dumps(result, indent=2, allow_nan=False), encoding='utf-8')
     return result, destination
