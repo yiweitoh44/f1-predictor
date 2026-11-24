@@ -2019,6 +2019,16 @@ def main():
             print('Full ranking not compared: driver fields or published positions are incomplete.')
             print('Missing forecast drivers: ' + (', '.join(result['missing_forecast_drivers']) or 'none'))
             print('Missing actual-result drivers: ' + (', '.join(result['missing_actual_drivers']) or 'none'))
+        probability = result['probability_scores']
+        if probability['available']:
+            print(f"Actual winner's saved first-place share: {100*probability['actual_winner_share']:.2f}%.")
+            print(f"Winner probability error (Brier; lower is better): {probability['winner_brier_sum']:.3f}; "
+                  f"equal-share baseline {probability['uniform_winner_brier_sum']:.3f}.")
+            if probability['top3_eligible']:
+                print(f"Top-three probability error (Brier; lower is better): {probability['top3_brier_sum']:.3f}; "
+                      f"equal-share baseline {probability['uniform_top3_brier_sum']:.3f}.")
+        else:
+            print('Probability comparison unavailable: ' + probability['reason'])
         print(f'Validation saved: {path}')
         return
     if args.offline and args.refresh:

@@ -1095,19 +1095,19 @@ positions are incomplete. Forecast creation timing distinguishes a genuinely
 saved pre-session prediction from a historical replay. Do not relabel a replay
 as a prediction made before the event. Original forecast files stay unchanged.
 
-Coverage review: freshly downloaded all six Sprint and six SQ outcomes. Checked
+Earlier coverage review: downloaded all six Sprint and six SQ outcomes. Checked
 12 official Formula1.com pages and eight final FIA classification PDFs for the
 incomplete cases. All published numeric positions agree with the retained truth.
 The missing tail entries are NC/DNS/DQ or unnumbered/unclassified; SQ also has
-incomplete numeric rosters. No additional full-field cases were justified. Keep
-the one complete Sprint and two complete SQ benchmark fields; never invent a
-retirement order to increase coverage. Research and source PDFs stay outside Git.
+incomplete numeric rosters. The later roster correction restored a third complete
+SQ field; the current counts are one Sprint field and three SQ fields. Never
+invent a retirement order to increase coverage. Source PDFs stay outside Git.
 
 Retained same-case 50-event benchmark is unchanged:
   Race: 16/19 winners, 37/57 podium identities, 3.3158 places out / 19 fields.
-  Q:    11/19 poles,   30/57 top-three identities, 1.9432 / 16 fields.
-  Sprint: 5/6 winners, 14/18 podium identities, 1.0000 / ONE field.
-  SQ:     3/6 poles,   10/18 top-three identities, 1.7727 / TWO fields.
+  Q:    12/19 poles,   30/57 top-three identities, 1.9318 / 16 fields.
+  Sprint: 6/6 winners, 14/18 podium identities, 0.8182 / ONE field.
+  SQ:     3/6 poles,   10/18 top-three identities, 1.9091 / THREE fields.
 These figures use the existing verified outcome CSVs, including original Mexico
 forecasts. Internal OpenF1-only backtests have their own published-position
 coverage and can lack full-field error when the provider leaves positions blank.
@@ -1116,13 +1116,46 @@ not improved or worsened predictions. Residuals and the latest-four-window base
 uncertainty calculation retain the existing training-label policy; this update
 does not claim a calibrated spread. Reliability testing remains item 6.
 
-Verification: 328 external checks, 324 pass / four FastF1-only skips; all 63 frozen
+24 November probability-scoring extension:
+The same --score-forecast / --actual-results command now also prints the actual
+winner's saved first-place share and winner/top-three probability errors, with
+an equal-share reference. These checks run AFTER the event, offline, using the
+hashed simulation_details.csv. They do not appear in a normal prediction table
+and do not change the model, uncertainty, simulation draws or backtest hit counts.
+
+The separate evaluation JSON includes probability_scores:
+  winner_brier_sum: sum of squared winner-category errors; 0 is best, 2 worst.
+  top3_brier_sum: sum of squared top-three membership errors; 0 best, 6 worst.
+  actual_winner_share: saved simulation fraction, on a 0..1 scale.
+  winner_log_loss: -ln(actual_winner_share), using the natural logarithm.
+If the actual winner had zero sampled wins, log loss is infinite: the JSON stores
+null plus winner_log_loss_infinite=true, never a misleading finite replacement.
+Zero sampled wins do not prove that a real-world outcome was impossible.
+Published P1 suffices for winner probability scoring; P1/P2/P3 are required for
+top-three scoring. Unknown tail places are not invented. Missing forecast
+winners/podium drivers receive zero share, without renormalizing the remaining
+field. Invalid shares or mismatched probability rosters stop scoring. Older
+saved files without shares keep their position scores and report unavailable.
+
+Same retained 50 cases, average winner Brier errors (lower is better):
+  Race .6003; Q .7506; Sprint .3866; SQ .8149; equal-share reference .9545.
+On 13 matching Race cases with enough earlier baseline history, the model's
+.5469 is worse than an earlier-fitted grid-rank probability reference's .4811.
+That does not overturn the winner-pick comparison: on 16 matching grid cases,
+the model picks 15 winners and grid order picks 12. These are different metrics
+with different eligibility counts. Small, repeatedly inspected histories do not
+establish future superiority or calibrated real-world probabilities.
+48 retained cases are historical replays; two are the original Mexico forecasts
+saved before their sessions. Report these separately when claiming future skill.
+
+Verification: 443 external checks, 439 pass / four FastF1-only skips; all 63 frozen
 source-to-export replays retain predictions/simulation tables, native inputs,
 source URL/hash sets, cutoffs and sigmas. This includes the 62 canonical stages
 and the separate Brazil replay. All 50 saved forecasts score offline, including
-every active specialist type, without modifying their hashes. Old 671-file dated
-benchmark and original Mexico forecasts remain intact. A new dated backup records
-the corrected reports. No tests/cache/results/research reports are added to Git.
+every active specialist type, without modifying their hashes. The current
+722-file snapshot, working statistics
+and original Mexico forecasts are also unchanged. No tests/cache/results/research
+reports are added to Git.
 
 This completes item 5's scoring/coverage review. Final release-wide verification
 will run after the remaining agreed items 6–10; no release is created here.
