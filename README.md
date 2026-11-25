@@ -275,12 +275,31 @@ Mean positions are now calculated directly from the selected probability model.
 Random draws still provide winner/top-three shares and close-call percentages,
 but cannot shuffle a close predicted order just because of sampling noise.
 
-Trained GP forecasts and Sprints without enough calibration history use
-independent Gumbel score noise at the same estimated standard deviation. Trained
-Sprints with sufficient history use the joint residual calibration below.
-Qualifying/SQ and early-season fallback keep Gaussian noise. The race-family change improves winner probability scoring on
-both the earlier and later GP checks. Percentages remain experimental model
-shares, with no claim of calibrated real-world chances.
+Trained GP forecasts and final-stage GP qualifying now learn separate winner and
+podium spreads from earlier published outcomes. The simulation averages plausible
+spreads and generates complete finishing orders, so shares, close calls and mean
+positions describe the same probability model. At least three earlier complete
+forecast fields with published podiums are required. Qualifying without admitted
+FP3 or Sprint/SQ evidence retains its existing uncertainty. The native scores
+and training inputs are unchanged.
+
+Without enough history, trained GP forecasts use the existing Gumbel score noise
+and qualifying uses Gaussian noise. Sprint retains its joint residual calibration
+below (Gumbel when history is insufficient). SQ and early-season forecasts remain
+unchanged. Percentages are experimental model shares, with no claim of calibrated
+real-world chances.
+
+On 19 matched current-source replays per format, winner probability error falls
+from **0.601 to 0.471 for Race** and **0.750 to 0.701 for qualifying** (lower is
+better). Podium probability error also improves overall; picks and full-field
+ranking accuracy stay unchanged. Some individual weekends worsen, and the
+qualifying improvement has weaker statistical support. These are inspected
+historical comparisons, not prospective accuracy estimates. The official
+benchmark still preserves the original Mexico forecasts separately.
+
+`run_info.json` → `simulation_uncertainty.rank_probability_policy` records the
+earlier rounds, exclusions, fitted spreads, mixture weights and activation reason.
+Existing backtest hit counts continue to measure finishing-order picks.
 
 On the same retained 50-event benchmark, qualifying poles improve **11/19 → 12/19**
 and qualifying ranking error improves **1.943 → 1.932**. Suzuka's close pole pick

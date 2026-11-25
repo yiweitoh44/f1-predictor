@@ -860,7 +860,7 @@ def train_and_check(frame, target_code, comparison_rows=None, qualifying_practic
             "three earlier training weekends."
         )
 
-    errors, details, comparisons = [], [], []
+    errors, details, comparisons, probability_records = [], [], [], []
     for rnd in test_rounds:
         train = frame[frame.event_round < rnd]
         test = frame[
@@ -896,6 +896,10 @@ def train_and_check(frame, target_code, comparison_rows=None, qualifying_practic
                     race_long.predict(group[influence.RACE_LONG_MODEL_COLUMNS]))
                 guess = influence.reorder_race_front(base_guess, vote, group.driver.to_numpy())
             guess = influence.recovery_scores(guess, group.to_dict('records'), target_code)
+            if target_code in {'R', 'Q'}:
+                probability_records.append(dict(round=int(rnd), scores=guess.tolist(),
+                    actual=group.get('target_position', pd.Series(np.nan, index=group.index)).to_numpy(dtype=float).tolist(),
+                    roster_sizes=group.get('target_roster_size', pd.Series(np.nan, index=group.index)).to_numpy(dtype=float).tolist()))
             details.append({"round": int(rnd), "session": session_code,
                             **published_metrics(group, guess)})
             comparisons.extend(benchmark_records(group, guess, rnd, session_code))
@@ -939,6 +943,7 @@ def train_and_check(frame, target_code, comparison_rows=None, qualifying_practic
         print("Recovery backtests use bounded evidence adjustments; simulation spread retains base-model errors.")
     sigma = max(float(np.std(residuals, ddof=1)), 0.03)
     model = fit(frame, columns)
+    model.probability_records = probability_records
     model.uncertainty_report = dict(basis='earlier base-model out-of-fold residual standard deviation',
         residual_rows=len(residuals), residual_weekends=len(uncertainty_rounds),
         residual_rounds=sorted(int(r) for r in uncertainty_rounds),
@@ -1059,6 +1064,167 @@ def sprint_calibration(frame, inputs, scores, sigma, target, early, target_round
                  covariance=covariance, residual_rounds=rnd,
                  residual_errors=residual.corrected_error.to_numpy())
     return adjusted, covariance, policy, state
+
+
+def rank_probability_basis(scores, kind):
+    values = np.asarray(scores, dtype=float)
+    if values.ndim != 1 or len(values) < 3 or not np.isfinite(values).all():
+        raise ValueError('Rank probabilities require at least three finite driver scores.')
+    if kind == 'score':
+        return values - values.min()
+    if kind == 'rank':
+        return (pd.Series(values).rank(method='average').to_numpy()-1)/(len(values)-1)
+    raise ValueError('Unknown rank probability basis.')
+
+
+def rank_probability_policy(records, sigma, target, early, target_round, inputs):
+    """Learn uncertainty from earlier complete-field, out-of-fold predictions.
+
+    Actual published positions enter this likelihood only, never model features.
+    Average plausible temperatures instead of selecting the sharpest fitted one.
+    """
+    policy = dict(active=False, method='stagewise Plackett-Luce posterior mixture',
+        calibrated=False, minimum_prior_fields=3, prior_rounds=[], excluded=[],
+        reason='only trained Race and final-stage GP qualifying are supported')
+    if early or target not in {'R', 'Q'}:
+        return policy
+    if target == 'Q' and not any(
+            key in inputs and inputs[key].eq(1).any()
+            for key in ['FP3_available', 'S_available', 'SQ_available']):
+        policy['reason'] = 'no admitted FP3 or Sprint/SQ evidence; existing uncertainty retained'
+        return policy
+    simulation_uncertainty(sigma, 1)
+    valid = []
+    seen = set()
+    for record in records:
+        rnd = int(record['round'])
+        if rnd >= target_round or rnd in seen:
+            raise ValueError('Probability history must contain unique, strictly earlier rounds.')
+        seen.add(rnd)
+        scores = np.asarray(record['scores'], float)
+        actual = np.asarray(record['actual'], float)
+        sizes = np.asarray(record['roster_sizes'], float)
+        reason = None
+        if (scores.ndim != 1 or len(scores) < 3 or not np.isfinite(scores).all()
+                or actual.shape != scores.shape or sizes.shape != scores.shape
+                or not np.all(sizes == len(scores))):
+            reason = 'incomplete historical forecast field'
+        else:
+            known = actual[np.isfinite(actual)]
+            if (len(known) != len(np.unique(known)) or np.any(known < 1)
+                    or np.any(known > len(scores)) or np.any(known != np.floor(known))
+                    or np.sum(actual == 1) != 1):
+                reason = 'ambiguous or unavailable published positions'
+        if reason:
+            policy['excluded'].append(dict(round=rnd, reason=reason))
+        else:
+            valid.append(dict(round=rnd, scores=scores, actual=actual))
+    valid = sorted(valid, key=lambda r: r['round'])[-BACKTEST_WEEKENDS:]
+    policy['prior_rounds'] = [r['round'] for r in valid]
+    if len(valid) < 3 or sum({1, 2, 3}.issubset(r['actual']) for r in valid) < 3:
+        policy['reason'] = 'fewer than three earlier complete forecast fields with published podiums'
+        return policy
+    kind = 'score' if target == 'R' else 'rank'
+    anchor = max(.01, float(sigma)*np.sqrt(6)/np.pi)
+    lo, hi = max(-2.5, np.log(.01/anchor)), min(1.5, np.log(1/anchor))
+    nodes, quadrature = np.polynomial.legendre.leggauss(33)
+    theta = (nodes+1)*(hi-lo)/2+lo
+    temperatures = anchor*np.exp(theta)
+    penalties = np.zeros((2, len(theta)))
+    last_round = valid[-1]['round']
+    for record in valid:
+        values = rank_probability_basis(record['scores'], kind)
+        available = np.ones(len(values), bool)
+        weight = 2**(-(last_round-record['round'])/6)
+        for position in [1, 2, 3]:
+            selected = np.flatnonzero(record['actual'] == position)
+            if len(selected) != 1:
+                break
+            index = selected[0]
+            logits = -values[available, None]/temperatures
+            maximum = logits.max(axis=0)
+            logsum = maximum+np.log(np.exp(logits-maximum).sum(axis=0))
+            penalties[int(position > 1)] += weight*(logsum+values[index]/temperatures)
+            available[index] = False
+    logweights = np.log(quadrature)[None, :]-penalties-.25*theta[None, :]**2
+    weights = np.exp(logweights-logweights.max(axis=1, keepdims=True))
+    weights /= weights.sum(axis=1, keepdims=True)
+    policy.update(active=True, reason='sufficient earlier published winner/podium evidence',
+        basis=kind, temperatures=temperatures.tolist(), first_weights=weights[0].tolist(),
+        podium_weights=weights[1].tolist(), tail=anchor, quadrature_nodes=33,
+        log_temperature_prior_precision=.5, recency_half_life_rounds=6,
+        likelihood='published first place, then conditional second/third; missing ranks stop likelihood',
+        selection_caveat='retrospective inspected season; no guarantee of calibrated future chances')
+    return policy
+
+
+def rank_probability_moments(scores, policy):
+    """Exact first/top-three marginals and expected ranks for the saved mixture."""
+    values = rank_probability_basis(scores, policy['basis'])
+    n = len(values)
+    temperatures = np.asarray(policy['temperatures'], float)
+    first_weights = np.asarray(policy['first_weights'], float)
+    podium_weights = np.asarray(policy['podium_weights'], float)
+    if (temperatures.ndim != 1 or not len(temperatures)
+            or not np.isfinite(temperatures).all() or np.any(temperatures <= 0)
+            or not np.isfinite(policy['tail']) or policy['tail'] <= 0):
+        raise ValueError('Rank probability temperatures must be positive and finite.')
+    for weights in [first_weights, podium_weights]:
+        if (weights.shape != temperatures.shape or not np.isfinite(weights).all()
+                or np.any(weights < 0) or not np.isclose(weights.sum(), 1., atol=1e-12, rtol=0)):
+            raise ValueError('Rank probability mixture weights must sum to one.')
+    def softmax(logits, axis):
+        exp = np.exp(logits-logits.max(axis=axis, keepdims=True))
+        return exp/exp.sum(axis=axis, keepdims=True)
+    first = np.zeros(n)
+    conditional = np.zeros((n, n, n))
+    idx = np.arange(n)
+    for temperature, w1, w23 in zip(temperatures, first_weights, podium_weights):
+        logits = -values/temperature
+        first += w1*softmax(logits, 0)
+        second = np.broadcast_to(logits, (n, n)).copy()
+        np.fill_diagonal(second, -np.inf)
+        third = np.broadcast_to(logits, (n, n, n)).copy()
+        third[idx, :, idx] = -np.inf
+        third[:, idx, idx] = -np.inf
+        conditional += w23*softmax(second, 1)[:, :, None]*softmax(third, 2)
+    joint = first[:, None, None]*conditional
+    pair12, pair13, pair23 = joint.sum(axis=2), joint.sum(axis=1), joint.sum(axis=0)
+    second, third = pair12.sum(axis=0), pair13.sum(axis=0)
+    top3 = first+second+third
+    included = pair12+pair13+pair23
+    included += included.T.copy()
+    surviving = 1-top3[:, None]-top3[None, :]+included
+    np.fill_diagonal(surviving, 0)
+    tail_pair = 1/(1+np.exp(np.clip((values[None, :]-values[:, None])/policy['tail'], -700, 700)))
+    average = first+2*second+3*third+4*(1-top3)+(surviving*tail_pair).sum(axis=1)
+    return first, top3, average
+
+
+def simulate_rank_probabilities(scores, count, policy, seed=42):
+    """Draw coherent full orders; all displayed shares use these same draws."""
+    simulation_uncertainty(0., count)
+    _, _, average = rank_probability_moments(scores, policy)
+    values = rank_probability_basis(scores, policy['basis'])
+    rng = np.random.default_rng(seed)
+    t1 = rng.choice(policy['temperatures'], count, p=policy['first_weights'])
+    t23 = rng.choice(policy['temperatures'], count, p=policy['podium_weights'])
+    n = len(values)
+    rows = np.arange(count)
+    # Negative Gumbel keys give Plackett-Luce choices favouring lower scores.
+    first = np.argmin(values-rng.gumbel(size=(count, n))*t1[:, None], axis=1)
+    middle = values-rng.gumbel(size=(count, n))*t23[:, None]
+    middle[rows, first] = np.inf
+    podium = np.argsort(middle, axis=1)[:, :2]
+    tail = values-rng.gumbel(size=(count, n))*policy['tail']
+    tail[rows, first] = np.inf
+    np.put_along_axis(tail, podium, np.inf, axis=1)
+    ranks = np.column_stack([first, podium, np.argsort(tail, axis=1)[:, :n-3]])
+    win = np.bincount(first, minlength=n)*100/count
+    top3 = np.bincount(ranks[:, :3].ravel(), minlength=n)*100/count
+    positions = np.empty(ranks.shape, dtype=np.int32)
+    np.put_along_axis(positions, ranks, np.arange(1, n+1)[None, :], axis=1)
+    return win, top3, average, positions
 
 
 def simulation_uncertainty(sigma, count, estimation=None, noise='normal'):
@@ -1754,9 +1920,20 @@ def run(args):
     if sprint_calibration_policy['active']:
         noise = 'normal'
         print('Sprint calibration: earlier-weekend errors adjust scores and joint uncertainty; base backtests exclude this final adjustment.')
-    win, top3, average, positions = simulate(scores, sigma, args.simulations,
-        return_positions=True, noise=noise, covariance=posterior_covariance)
+    rank_policy = rank_probability_policy(getattr(model, 'probability_records', []),
+        sigma, target, early, int(event['RoundNumber']), inputs)
+    if rank_policy['active']:
+        win, top3, average, positions = simulate_rank_probabilities(scores, args.simulations, rank_policy)
+        print('Simulation probabilities: winner and podium spreads averaged over earlier published outcomes; model scores unchanged.')
+    else:
+        win, top3, average, positions = simulate(scores, sigma, args.simulations,
+            return_positions=True, noise=noise, covariance=posterior_covariance)
     uncertainty = simulation_uncertainty(sigma, args.simulations, getattr(model, 'uncertainty_report', None), noise=noise)
+    uncertainty['rank_probability_policy'] = rank_policy
+    if rank_policy['active']:
+        uncertainty.update(noise='stagewise Plackett-Luce posterior mixture', noise_law='stagewise_plackett_luce',
+            gumbel_scale=None, sigma_basis='base residual sigma anchors the temperature prior and remaining-field spread',
+            mean_position_basis='analytic expectation under saved stagewise probability mixture')
     if sprint_calibration_policy['active']:
         uncertainty.update(noise='joint Gaussian posterior score noise', noise_law='joint_normal',
             sigma_basis='base residual sigma; marginal posterior spreads saved in sprint_calibration.npz',

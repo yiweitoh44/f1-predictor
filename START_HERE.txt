@@ -1176,7 +1176,7 @@ WHAT IS ACTIVE
    Changing --simulations cannot shuffle the predicted order. Winner/top-three
    shares and close-call estimates still come from the same coherent joint draws.
    Very close sampled shares can fluctuate around the fixed expected order.
-2. Trained Race/Sprint base forecasts use Gumbel score noise, with scale sigma*sqrt(6)/pi
+2. The original trained Race/Sprint base forecasts use Gumbel score noise, with scale sigma*sqrt(6)/pi
    so its standard deviation matches the existing error-based sigma. No new
    fitting weight or driver-specific rule is added. Q/SQ and fixed early-season
    fallback retain Gaussian noise. Sigma remains the latest-four-window base
@@ -1188,7 +1188,8 @@ WHAT IS ACTIVE
    label policy, seed and sampling precision. A row is not an independent weekend.
    Derived retirement labels keep their existing training policy; item 5's
    published-position scoring remains unchanged.
-4. Invalid simulation inputs fail clearly. Below 5,000 draws the terminal notes
+4. The later Astra update below supersedes the base law for eligible Race/GP Q.
+   Invalid simulation inputs fail clearly. Below 5,000 draws the terminal notes
    greater variation in shares/close-call estimates. The main table format and
    CLI count limits (100 to 1,000,000) remain unchanged. Zero-noise internal
    scenarios remain supported. Forecast samplers keep positive spread.
@@ -1518,3 +1519,74 @@ no supported additional pole advantage. No experimental model is installed.
 
 The dedicated Sprint, Race, GP qualifying and SQ Astra reviews under item 3 are
 now complete. The results and raw-data/section exclusions are retained.
+
+ITEM 6 — ASTRA PROBABILITY REVIEW (25 NOVEMBER 2026)
+
+Race and final-stage GP qualifying now estimate separate spreads for selecting
+the winner and the next two drivers. A complete order is then drawn for every
+simulation. All shares and close-call percentages come from those same orders;
+mean positions are calculated analytically and do not jitter with draw count.
+Native scores, feature weights, grid/recovery rules and section exclusion stay
+unchanged. No new dependency or command is required.
+
+The fit uses up to eight earlier same-format out-of-fold forecasts, after the
+existing minimum training history. Each fold model was fitted before that fold.
+The historical forecast field must contain the full reported entrant count;
+survivor-only fields cannot supply a full-field likelihood. Published P1/P2/P3
+positions are used, not derived retirement-label ordering. Missing positions stop
+the corresponding ordered likelihood. Three complete fields with known podiums
+are required. Exclusions and accepted rounds are saved in run_info.json.
+
+Race uses score differences; GP qualifying uses tied ranks scaled to 0..1.
+Winning and conditional second/third likelihoods have separate log-temperature
+posteriors. Both use prior precision 0.5, a six-round recency half-life, and an
+anchor max(0.01, base_sigma*sqrt(6)/pi). Temperature is restricted to 0.01..1,
+and log ratios to the anchor to -2.5..1.5. A 33-node Gauss-Legendre integration
+averages plausible spreads; 65 nodes reproduce the results. The rest of the
+field uses the anchor spread. This is a stagewise Plackett-Luce distribution,
+not the earlier positive-Gumbel score perturbation. Its full-order draws and
+analytic marginals were checked independently against exhaustive small fields.
+
+Scope and retained alternatives:
+  - Final-stage GP Q requires admitted FP3 or earlier Sprint/SQ evidence. Applying the
+    new law to the twelve FP2-only Q forecasts worsens winner/podium probability
+    errors, so that stage keeps the existing method. A completed FP3 with no
+    admitted pace also retains the existing method.
+  - Early-season and sparse-history forecasts keep their existing law.
+  - Sprint keeps its existing joint residual calibration; SQ is unchanged.
+    Lowering the new method's history minimum to one/two was also tested.
+    Some Sprint options improve probability scores on only two active weekends,
+    but that is thin support for replacing its joint driver uncertainty. No SQ
+    option improves all required metrics. These trials were not installed.
+
+Matched current-source replays (19 Race + 19 Q; deterministic probabilities):
+                     Winner Brier       Podium Brier       Winner log loss
+  Race               0.60088 -> 0.47141  1.41852 -> 1.36861  1.33327 -> 1.14913
+  GP qualifying      0.74961 -> 0.70125  1.73076 -> 1.71616  1.92558 -> 1.72317
+Lower is better for all three errors. The ranking picks are unchanged. These
+numbers use integrated probabilities to remove Monte Carlo comparison noise;
+ordinary exports continue using their actual saved simulation fractions.
+
+Earlier rounds 1–12 and later rounds 13–18 improve on all three measures for
+both formats. Leaving out any one event retains the average improvement. Race's
+paired-event intervals are stronger; Q's include no improvement, so Q's gain is
+more tentative. Mexico and Brazil were separate diagnostics, not selection
+targets: Mexico Race probability errors worsen, and Brazil's winner error improves
+while podium error worsens. This is not a claim every weekend benefits.
+The season has been inspected repeatedly and is not independent future evidence.
+
+The official 50-forecast benchmark retains original pre-session Mexico Q/R
+forecasts. Headline picks remain Race16/19, Q12/19, Sprint6/6, SQ3/6; podium-driver
+matches remain37/57,30/57,14/18,10/18. Existing rolling backtest counts still assess
+the finishing order; they do not claim to validate new probabilities prospectively.
+
+Inspect simulation_uncertainty.rank_probability_policy in run_info.json for the
+activation reason, rounds, exclusions, score basis, temperatures and posterior
+weights. The base residual sigma remains recorded as the prior/tail anchor.
+Percentages remain experimental shares, not guaranteed real-world chances.
+
+Research references (adapted to this native ranking model, not copied claims):
+  Plackett-Luce rankings: https://arxiv.org/abs/1810.12068
+  Temperature scaling: https://arxiv.org/abs/1706.04599
+  Predictive distribution averaging: https://arxiv.org/abs/1704.02030
+Experiments, tests, caches and benchmark backups stay outside the repository.
