@@ -1590,3 +1590,29 @@ Research references (adapted to this native ranking model, not copied claims):
   Temperature scaling: https://arxiv.org/abs/1706.04599
   Predictive distribution averaging: https://arxiv.org/abs/1704.02030
 Experiments, tests, caches and benchmark backups stay outside the repository.
+
+ITEM 7 — ASTRA ENTRANT REVIEW (26 NOVEMBER 2026)
+
+Entrant selection now retains hash-checked FIA catalogue observations, including
+unresolved driver changes, withdrawals and recalled lists. Previously a later
+run with unavailable navigation could reuse an older parsed list as confirmed,
+even after an unresolved newer notice had been seen. A truncated later catalogue
+could also lose that evidence. Both paths now consult the retained observations.
+
+A later dated, readable revision resolves the notice. A simultaneous entry list
+and change notice is not ordered arbitrarily by its title. Conflicting cached
+rosters at the same effective time also cannot establish confirmation. Earlier
+cutoffs still exclude later publications. Old caches without saved catalogues
+remain usable, but cannot know notices that were never downloaded. --roster
+remains first priority; unavailable confirmation keeps the existing explicitly
+unconfirmed fallback rather than guessing the replacement driver.
+
+Review: all63 retained FIA selections and63 unavailable-navigation checks keep
+the same entrants. Latest participation also matches these63 cases, so supplies
+no coverage improvement; union/intersection agree in40/63 and majority in55/63.
+Participation is not a substitute for a dated confirmation or withdrawal notice.
+Three stale-evidence cases reproduced on previous main and pass after this fix.
+454 tests pass with four legacy FastF1 skips. Two full Mexico Q/R source replays
+retain prediction tables, inputs, grids and backtests. No model, lap-admission,
+probability or weight change; saved50-case statistics and original Mexico stay
+unchanged. No new module or dependency. Evidence stays outside Git.

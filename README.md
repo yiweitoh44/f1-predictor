@@ -371,6 +371,13 @@ not evidence that recovery is solved or that future accuracy is guaranteed.
 
 ### Confirmed entrants and substitutions
 
+Entry-list checks remember dated driver-change, withdrawal and recalled-list
+notices across runs. An offline or incomplete later catalogue cannot silently
+restore an older list as confirmed. A later verified revision can resolve the
+notice; simultaneous conflicts require confirmation. Cached conflicting rosters
+are not chosen arbitrarily. These checks preserve historical publication cutoffs
+and the existing manual/unconfirmed fallback paths.
+
 Automatic roster selection now checks dated FIA entry lists before the prediction
 cutoff, including eligible revisions. FP1-only substitutes stay separate from race
 entrants. A later complete competitive session can supersede an older entry list;

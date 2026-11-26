@@ -441,12 +441,59 @@ def parse_entry_pdf(blob, event, target, published):
     return main, reserves, max(issue, published)
 
 
+def eligible_entry_documents(documents, cutoff):
+    """Apply the same publication/conflict gates online and to saved catalogues."""
+    eligible = []
+    for doc in documents:
+        text = ' '.join(doc['text'].split())
+        lower = text.lower()
+        if 'entry list' in lower and ('fp1' in lower or 'free practice' in lower):
+            continue
+        if not any(w in lower for w in ['entry list', 'driver change', 'change of driver', 'withdrawal']):
+            continue
+        match = re.search(r'Published on (\d{2}\.\d{2}\.\d{2} \d{2}:\d{2})', text)
+        if not match:
+            raise ValueError('Entrant notice lacks a publication timestamp.')
+        published = pd.to_datetime(match[1], format='%d.%m.%y %H:%M').tz_localize(
+            'Europe/Paris', ambiguous='NaT', nonexistent='NaT').tz_convert('UTC')
+        if pd.isna(published):
+            raise ValueError('Ambiguous entrant publication clock time.')
+        if published <= cutoff:
+            eligible.append((published, text, doc.get('url')))
+    if not eligible:
+        raise ValueError('No eligible dated FIA entry list before the cutoff.')
+    newest = max(x[0] for x in eligible)
+    latest = [x for x in eligible if x[0] == newest]
+    if any('recalled' in x[1].lower() or 'entry list' not in x[1].lower() for x in latest):
+        raise ValueError('A newer or simultaneous driver-change/withdrawal/recalled notice needs a later readable entry list or manual roster.')
+    if len({x[2] for x in latest}) > 1:
+        raise ValueError('Conflicting entry lists have the same publication time.')
+    return sorted(eligible, key=lambda v:(v[0], v[1]), reverse=True)
+
+
 class EntryStore(GridStore):
     """Dated FIA entrants with immutable revisions and honest offline fallback."""
     def __init__(self, root, offline=False, refresh=False):
         super().__init__(root, offline, refresh)
         self.root = Path(root)/'entrants'
         self.warnings = []
+
+    def catalogue_documents(self, year, event):
+        """Union of hash-checked observations, including unresolved notices."""
+        paths = list((self.root/'catalogues'/f'{year}-{int(event["RoundNumber"])}').glob('*.json'))
+        catalogues = []
+        for path in paths:
+            try:
+                row = json.loads(path.read_text())
+                if path.stem != hashlib.sha256(json.dumps(row,sort_keys=True).encode()).hexdigest(): continue
+                if row.get('schema') != 1 or row['year'] != int(year) or row['round'] != int(event['RoundNumber']) or row['event'] != event['EventName']: continue
+                utc(row['observed_utc'])
+                if not isinstance(row['documents'],list) or any(not isinstance(d,dict) or not isinstance(d.get('text'),str) for d in row['documents']): continue
+                catalogues.append(row)
+            except (ValueError, KeyError, TypeError, OSError): continue
+        if paths and not catalogues:
+            raise ValueError('Saved entrant catalogues are invalid; cannot confirm an older roster.')
+        return [d for c in catalogues for d in c['documents']] if catalogues else None
 
     def resolve(self, year, event, target, cutoff):
         cutoff = utc(cutoff)
@@ -460,24 +507,17 @@ class EntryStore(GridStore):
             name = FIA_EVENT_NAMES.get(event['EventName'], event['EventName'])
             events = [v for v,l in page.options if normalized(l)==normalized(name)]
             if len(events) != 1: raise ValueError('FIA entrant event unavailable.')
-            page, _ = self.page(urljoin(root, events[0]))
+            event_url = urljoin(root, events[0])
+            page, observed = self.page(event_url)
             observed_catalogue = True
-            eligible = []
-            for doc in page.documents:
-                text = ' '.join(doc['text'].split())
-                if 'recalled' in text.lower(): continue
-                if 'entry list' in text.lower() and ('fp1' in text.lower() or 'free practice' in text.lower()): continue
-                if not any(w in text.lower() for w in ['entry list','driver change','change of driver','withdrawal']): continue
-                match = re.search(r'Published on (\d{2}\.\d{2}\.\d{2} \d{2}:\d{2})',text)
-                if not match: raise ValueError('Entrant notice lacks a publication timestamp.')
-                published = pd.to_datetime(match[1], format='%d.%m.%y %H:%M').tz_localize('Europe/Paris', ambiguous='NaT', nonexistent='NaT').tz_convert('UTC')
-                if pd.isna(published): raise ValueError('Ambiguous entrant publication clock time.')
-                if published <= cutoff: eligible.append((published, text, doc.get('url')))
-            if eligible:
-                newest = max(x[0] for x in eligible)
-                tied = {x[2] for x in eligible if x[0] == newest and 'entry list' in x[1].lower()}
-                if len(tied) > 1: raise ValueError('Conflicting entry lists have the same publication time.')
-            for published, text, path in sorted(eligible, key=lambda v:(v[0], v[1]), reverse=True):
+            # Retain negative evidence too: an offline run must not forget a
+            # newer unresolved change simply because no replacement PDF parsed.
+            catalogue = dict(schema=1, year=int(year), round=int(event['RoundNumber']),
+                event=event['EventName'], url=event_url, documents=page.documents,
+                observed_utc=utc(observed if observed is not None else pd.Timestamp.now(tz='UTC')).isoformat())
+            digest = hashlib.sha256(json.dumps(catalogue, sort_keys=True).encode()).hexdigest()
+            save_json(self.root/'catalogues'/f'{year}-{int(event["RoundNumber"])}'/f'{digest}.json', catalogue)
+            for published, text, path in eligible_entry_documents(self.catalogue_documents(year,event), cutoff):
                 if 'entry list' not in text.lower():
                     raise ValueError('A newer driver-change/withdrawal notice needs a readable revised entry list or manual roster.')
                 if not path: raise ValueError('Entry-list link unavailable.')
@@ -508,7 +548,23 @@ class EntryStore(GridStore):
                     if utc(row['known_utc'])>cutoff: continue
                     validate_roster(row['drivers']);records.append(row)
                 except (ValueError,KeyError,TypeError,OSError): continue
-            return max(records,key=lambda r:utc(r['known_utc'])) if records else None
+            try:
+                documents = self.catalogue_documents(year,event)
+                if documents is not None:
+                    published, text, path = eligible_entry_documents(documents, cutoff)[0]
+                    url = urljoin(root, path) if path else None
+                    records = [r for r in records if url and r['url'] == url and utc(r['known_utc']) >= published]
+            except (ValueError, KeyError, TypeError) as error:
+                self.warnings.append('Saved entrant evidence blocks old confirmation: '+str(error))
+                return None
+            if not records: return None
+            newest = max(utc(r['known_utc']) for r in records)
+            latest = [r for r in records if utc(r['known_utc']) == newest]
+            identities = {json.dumps(sorted(r['drivers'],key=lambda d:d['driver']),sort_keys=True) for r in latest}
+            if len(identities) > 1:
+                self.warnings.append('Conflicting cached entry revisions; use a confirmed manual roster.')
+                return None
+            return sorted(latest, key=lambda r:(r.get('url',''), r.get('sha256','')))[0]
 
 
 def entry_roster(record, catalogue):
